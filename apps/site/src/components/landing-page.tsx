@@ -22,7 +22,7 @@ export function LandingPage({ lang }: { lang: Lang }) {
       <Reveal />
       <header className="lp-container lp-fade pt-6 min-[810px]:pt-8">
         <div className="relative flex h-9 items-center justify-between">
-          <Logo />
+          <Logo lang={lang} />
           <nav className="lp-mono absolute left-1/2 hidden -translate-x-1/2 gap-10 text-[color:var(--lp-ink-soft)] min-[810px]:flex">
             <a href="#features" className="transition-colors hover:text-[color:var(--lp-ink)]">
               {t.nav.features}
@@ -173,7 +173,7 @@ export function LandingPage({ lang }: { lang: Lang }) {
       </main>
 
       <footer data-reveal className="lp-container pt-24 pb-10 min-[810px]:pt-[120px]">
-        <Logo />
+        <Logo lang={lang} />
         <div className="mt-8 flex flex-wrap items-center justify-between gap-4 text-[14px] leading-[19.6px]">
           <p>
             © {new Date().getFullYear()} Keyfold. {t.footer}
