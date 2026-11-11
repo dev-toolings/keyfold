@@ -82,10 +82,14 @@ export function DocPageView({ page, lang }: { page: DocPage; lang: Lang }) {
       <SiteHeader lang={lang} otherHref={otherHref} />
       <main className="lp-container">
         <article className="lp-doc">
-          <nav aria-label={lang === "fr" ? "Fil d'Ariane" : "Breadcrumb"} className="lp-doc-crumbs">
-            <a href={PATHS[lang]}>{labels.home}</a>
-            <ChevronRight aria-hidden="true" className="size-3.5" />
-            <span aria-current="page">{t.nav}</span>
+          <nav aria-label={lang === "fr" ? "Fil d'Ariane" : "Breadcrumb"}>
+            <ol className="lp-doc-crumbs">
+              <li>
+                <a href={PATHS[lang]}>{labels.home}</a>
+                <ChevronRight aria-hidden="true" className="size-3.5" />
+              </li>
+              <li aria-current="page">{t.nav}</li>
+            </ol>
           </nav>
           <h1>{t.h1}</h1>
           <p className="lp-doc-lede">

@@ -639,10 +639,14 @@
   line-height: 1.6;
 }
 
-.lp-doc-crumbs {
+.lp-doc-crumbs,
+.lp-doc-crumbs li {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.lp-doc-crumbs {
   color: var(--lp-ink-soft);
   font-size: 14px;
   line-height: 19.6px;

@@ -30,7 +30,10 @@ export type PageContent = {
 
 export type DocPage = {
   key: PageKey;
-  /** Date of the last content change (ISO), shown on the page and in the sitemap. */
+  /**
+   * Date of the last content change (ISO), shown on the page and published as lastmod in the
+   * sitemap. Change it with every edit of the page's content, and only then.
+   */
   updated: string;
   content: Record<Lang, PageContent>;
 };
@@ -66,7 +69,7 @@ const security: DocPage = {
           title: "How is a secret encrypted?",
           blocks: [
             {
-              p: "Encryption happens in the browser or in the `kf` command line, never on the server. It uses age, an open file encryption format.",
+              p: "Encryption happens in the browser or in the `kf` command line, never on the server, with age.",
             },
             {
               list: [
@@ -142,7 +145,7 @@ const security: DocPage = {
         },
         {
           id: "limits",
-          title: "What is not protected yet?",
+          title: "What are the limits to know?",
           blocks: [
             {
               list: [
@@ -163,14 +166,14 @@ const security: DocPage = {
       description:
         "Comment Keyfold chiffre vos secrets avec age côté client, ce que le serveur stocke, le rôle des sessions et du TOTP, et ce qui n'est pas encore protégé.",
       h1: "Modèle de sécurité",
-      lede: "Keyfold chiffre chaque secret côté client avec age, avant qu'il n'atteigne le serveur. Le serveur stocke des fichiers chiffrés et ne voit jamais le mot de passe principal, l'identité du coffre ni une valeur.",
+      lede: "Keyfold chiffre chaque secret côté client avec age, avant qu'il n'atteigne le serveur. Le serveur stocke des fichiers chiffrés et ne voit jamais ni le mot de passe principal, ni l'identité du coffre, ni aucune valeur.",
       sections: [
         {
           id: "chiffrement",
           title: "Comment un secret est-il chiffré ?",
           blocks: [
             {
-              p: "Le chiffrement se fait dans le navigateur ou dans la ligne de commande `kf`, jamais sur le serveur. Il repose sur age, un format ouvert de chiffrement de fichiers.",
+              p: "Le chiffrement se fait dans le navigateur ou dans la ligne de commande `kf`, jamais sur le serveur, avec age.",
             },
             {
               list: [
@@ -198,7 +201,7 @@ const security: DocPage = {
               },
             },
             {
-              p: "Ses journaux contiennent une ligne par requête avec la méthode, le chemin, le statut et la durée : jamais un en-tête, un corps ni une chaîne de requête.",
+              p: "Ses journaux contiennent une ligne par requête avec la méthode, le chemin, le statut et la durée : jamais d'en-tête, de corps ni de chaîne de requête.",
             },
           ],
         },
@@ -223,7 +226,7 @@ const security: DocPage = {
                 "L'accès à l'API demande un jeton de session, obtenu en déchiffrant un défi aléatoire avec l'identité.",
                 "Les jetons et les défis ne vivent que dans la mémoire du serveur, avec une expiration après 15 minutes d'inactivité. Un redémarrage du serveur verrouille tous les clients.",
                 "L'interface web garde l'identité et le jeton en mémoire seulement. Un secret copié est effacé du presse-papiers après 30 secondes.",
-                "L'agent de la CLI reçoit l'identité par un tube, jamais par argv ni par l'environnement, et la sert sur une socket `0600` dans un dossier `0700`. Il s'arrête à la fin de sa durée de vie ou sur `kf lock`.",
+                "L'agent de la CLI reçoit l'identité par un tube, jamais par argv ni par l'environnement, et la sert sur un socket `0600` dans un dossier `0700`. Il s'arrête à la fin de sa durée de vie ou sur `kf lock`.",
               ],
             },
           ],
@@ -246,7 +249,7 @@ const security: DocPage = {
         },
         {
           id: "limites",
-          title: "Qu'est-ce qui n'est pas encore protégé ?",
+          title: "Quelles sont les limites à connaître ?",
           blocks: [
             {
               list: [
@@ -427,7 +430,7 @@ const cli: DocPage = {
                   ],
                   [
                     "`kf run -env VAR=kf://<name>/<field> -- cmd`",
-                    "Lance `cmd` avec les secrets dans son environnement, jamais dans argv ni sur le disque. Rend le code de sortie de la commande.",
+                    "Lance `cmd` avec les secrets dans son environnement, jamais dans argv ni sur le disque. Se termine avec le code de sortie de la commande.",
                   ],
                   [
                     "`kf inject -i template [-o out]`",
@@ -435,7 +438,7 @@ const cli: DocPage = {
                   ],
                   [
                     "`kf generate [-len 24] [-symbols=false] [-words N]`",
-                    "Affiche un mot de passe aléatoire, ou une phrase de passe de `N` mots tirés de la grande liste EFF. Ne stocke rien : envoyez-le dans `kf set`.",
+                    "Affiche un mot de passe aléatoire, ou une phrase de passe de `N` mots tirés de la grande liste EFF. Ne stocke rien : redirigez-le vers `kf set`.",
                   ],
                   ["`kf totp <name>`", "Affiche le code TOTP courant de l'élément."],
                   ["`kf list`", "Les noms et les types, jamais les valeurs."],
@@ -468,7 +471,7 @@ const cli: DocPage = {
             {
               list: [
                 "`kf import -format keyfold|bitwarden-json|1password-1pux|csv <file>` ajoute les éléments d'un export. Le CSV lit les en-têtes de Chrome, Firefox, Bitwarden et 1Password.",
-                "Un élément déjà présent est ignoré ; un autre dont le nom est pris reçoit ` (2)`. Les cartes de paiement sont ignorées et listées.",
+                "Un élément déjà présent est ignoré ; un autre dont le nom est pris reçoit le suffixe ` (2)`. Les cartes de paiement sont ignorées et listées.",
                 "`kf export [-format keyfold|bitwarden-json] [-o file] (-encrypt | -plaintext)` exporte tous les éléments. `-encrypt` demande une phrase de passe d'au moins 16 caractères et écrit un fichier age ; `-plaintext` doit être demandé explicitement.",
                 "Un export n'est jamais écrit dans un terminal, et les pièces jointes sont laissées de côté (un avertissement les compte).",
               ],
@@ -523,7 +526,7 @@ const mcp: DocPage = {
               p: "Whatever a tool returns enters the model's conversation and its transcripts. So no tool returns a value or a note, and none edits or deletes an item.",
             },
             {
-              p: "The health rules are the same as the web dashboard: both read the same test cases, so an agent and the interface report the same items.",
+              p: "The health rules are the same as the web dashboard's: they exist in Go and in TypeScript, and both test suites check the same cases.",
             },
           ],
         },
@@ -542,7 +545,7 @@ const mcp: DocPage = {
           title: "How does a program get a secret, then?",
           blocks: [
             {
-              p: "Through the command line, not through a tool. `kf run` starts a program with the secrets in its environment, never in argv or on disk, and `kf inject` fills a config template written with mode `0600`.",
+              p: "Through the command line, not through a tool. `kf run` starts a program with the secrets in its environment, never in argv or on disk, and `kf inject` fills a config template (a file written with `-o` gets mode `0600`).",
             },
             { code: "kf run -env DB_PASSWORD=kf://prod-db/password -- ./server" },
           ],
@@ -554,7 +557,7 @@ const mcp: DocPage = {
       nav: "MCP",
       title: "Serveur MCP : un coffre de secrets pour agents IA | Keyfold",
       description:
-        "kf mcp donne trois outils à un agent IA : lister les éléments, créer un secret généré, lire l'état du coffre. Aucun outil ne renvoie une valeur.",
+        "kf mcp donne trois outils à un agent IA : lister, créer un secret généré, lire l'état du coffre. Aucun outil ne renvoie de valeur ni ne modifie rien.",
       h1: "Serveur MCP pour agents IA",
       lede: "`kf mcp` est un serveur Model Context Protocol intégré à la ligne de commande de Keyfold. Un agent IA peut lister le coffre, créer un secret généré et lire l'état du coffre, et aucun outil ne renvoie jamais la valeur d'un secret.",
       sections: [
@@ -585,13 +588,13 @@ const mcp: DocPage = {
         },
         {
           id: "surete",
-          title: "Pourquoi un agent peut-il s'en servir sans voir un secret ?",
+          title: "Pourquoi un agent peut-il s'en servir sans voir de secret ?",
           blocks: [
             {
-              p: "Tout ce qu'un outil renvoie entre dans la conversation du modèle et dans ses transcriptions. Aucun outil ne renvoie donc une valeur ni une note, et aucun ne modifie ni ne supprime un élément.",
+              p: "Tout ce qu'un outil renvoie entre dans la conversation du modèle et dans ses transcriptions. Aucun outil ne renvoie donc de valeur ni de note, et aucun ne modifie ni ne supprime d'élément.",
             },
             {
-              p: "Les règles de l'état du coffre sont celles du tableau de bord web : les deux lisent les mêmes cas de test, donc un agent et l'interface signalent les mêmes éléments.",
+              p: "Les règles de l'état du coffre sont celles du tableau de bord web : elles existent en Go et en TypeScript, et les deux suites de tests vérifient les mêmes cas.",
             },
           ],
         },
@@ -610,7 +613,7 @@ const mcp: DocPage = {
           title: "Comment un programme reçoit-il un secret, alors ?",
           blocks: [
             {
-              p: "Par la ligne de commande, pas par un outil. `kf run` lance un programme avec les secrets dans son environnement, jamais dans argv ni sur le disque, et `kf inject` remplit un modèle de configuration écrit en mode `0600`.",
+              p: "Par la ligne de commande, pas par un outil. `kf run` lance un programme avec les secrets dans son environnement, jamais dans argv ni sur le disque, et `kf inject` remplit un modèle de configuration (un fichier écrit avec `-o` reçoit le mode `0600`).",
             },
             { code: "kf run -env DB_PASSWORD=kf://prod-db/password -- ./server" },
           ],
@@ -631,7 +634,7 @@ const selfHosting: DocPage = {
       description:
         "Run Keyfold on your own machine: one Go server, a data directory of encrypted files, a web UI and a command line. What to start, and the limits to know first.",
       h1: "Self-hosting Keyfold",
-      lede: "Keyfold runs on your own machine: one Go server that stores encrypted files in a data directory, with a web UI and a command line. Nothing is hosted for you, and no online service is involved.",
+      lede: "Keyfold runs on your own machine: one Go server that stores encrypted files in a data directory, with a web UI and a command line. Nothing is hosted for you.",
       sections: [
         {
           id: "components",
@@ -728,7 +731,7 @@ const selfHosting: DocPage = {
       description:
         "Faites tourner Keyfold sur votre machine : un serveur Go, un dossier de fichiers chiffrés, une interface web et une CLI. Quoi lancer, et ses limites.",
       h1: "Auto-héberger Keyfold",
-      lede: "Keyfold tourne sur votre propre machine : un serveur Go qui range des fichiers chiffrés dans un dossier de données, avec une interface web et une ligne de commande. Rien n'est hébergé pour vous, et aucun service en ligne n'intervient.",
+      lede: "Keyfold tourne sur votre propre machine : un serveur Go qui range des fichiers chiffrés dans un dossier de données, avec une interface web et une ligne de commande. Rien n'est hébergé pour vous.",
       sections: [
         {
           id: "composants",

@@ -8,7 +8,8 @@ export const PATHS: Record<Lang, string> = { fr: "/", en: "/en" };
 
 const LOCALES: Record<Lang, string> = { fr: "fr_FR", en: "en_US" };
 
-// Date of the last content change of the home pages (ISO), for the sitemap.
+// Date of the last content change of the home pages (ISO), published as lastmod in the sitemap.
+// Change it with every edit of the home content, and only then.
 export const HOME_UPDATED = "2026-11-11";
 
 /** "/securite" in French, "/en/security" in English. */
