@@ -84,7 +84,7 @@ export const CONTENT: Record<Lang, Content> = {
         tags: ["SSH", "Scripts", "Sans affichage"],
         description:
           "La commande kf get donne une phrase de passe à un script sans jamais l'écrire dans un terminal ni dans un journal. Un agent local garde le coffre ouvert pour une durée limitée.",
-        link: { label: "Voir le coffre", to: "/personal/vault" },
+        link: { label: "Lire la référence de kf", to: "/cli" },
       },
       {
         id: "mcp",
@@ -92,7 +92,7 @@ export const CONTENT: Record<Lang, Content> = {
         tags: ["Claude Code", "Sans valeur", "Génération"],
         description:
           "Un agent IA liste vos éléments et crée des secrets aléatoires. Aucun outil ne renvoie une valeur : rien de sensible n'entre dans la conversation du modèle.",
-        link: { label: "Voir le coffre", to: "/personal/vault" },
+        link: { label: "Voir les outils MCP", to: "/mcp" },
       },
       {
         id: "crypto",
@@ -100,7 +100,7 @@ export const CONTENT: Record<Lang, Content> = {
         tags: ["age", "X25519", "scrypt"],
         description:
           "Le serveur ne stocke que des fichiers chiffrés. Un disque ou une image de machine volés ne révèlent rien sans votre mot de passe principal, qui ne quitte jamais votre poste.",
-        link: { label: "Lire le modèle de sécurité", to: "#security" },
+        link: { label: "Lire le modèle de sécurité", to: "/securite" },
       },
     ],
     securityTitle: "Ce que le serveur ne peut pas faire.",
@@ -203,7 +203,7 @@ export const CONTENT: Record<Lang, Content> = {
         tags: ["SSH", "Scripts", "Never printed"],
         description:
           "The kf get command hands a passphrase to a script without ever writing it to a terminal or a log. A local agent keeps the vault open for a limited time.",
-        link: { label: "See the vault", to: "/personal/vault" },
+        link: { label: "Read the kf reference", to: "/en/cli" },
       },
       {
         id: "mcp",
@@ -211,7 +211,7 @@ export const CONTENT: Record<Lang, Content> = {
         tags: ["Claude Code", "No values", "Generation"],
         description:
           "An AI agent lists your items and creates random secrets. No tool returns a value: nothing sensitive enters the model's conversation.",
-        link: { label: "See the vault", to: "/personal/vault" },
+        link: { label: "See the MCP tools", to: "/en/mcp" },
       },
       {
         id: "crypto",
@@ -219,7 +219,7 @@ export const CONTENT: Record<Lang, Content> = {
         tags: ["age", "X25519", "scrypt"],
         description:
           "The server only stores encrypted files. A stolen disk or machine image reveals nothing without your master password, which never leaves your computer.",
-        link: { label: "Read the security model", to: "#security" },
+        link: { label: "Read the security model", to: "/en/security" },
       },
     ],
     securityTitle: "What the server cannot do.",
