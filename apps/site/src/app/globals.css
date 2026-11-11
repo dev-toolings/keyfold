@@ -631,3 +631,230 @@
     transition: none;
   }
 }
+
+/* Content pages: one reading column, the answer first, then one question per section. */
+.lp-doc {
+  padding-top: 48px;
+  font-size: 17px;
+  line-height: 1.6;
+}
+
+.lp-doc-crumbs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--lp-ink-soft);
+  font-size: 14px;
+  line-height: 19.6px;
+}
+
+.lp-doc-crumbs a:hover {
+  color: var(--lp-ink);
+}
+
+.lp-doc h1 {
+  margin-top: 20px;
+  max-width: 20ch;
+  font-size: 40px;
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -0.035em;
+  text-wrap: balance;
+}
+
+.lp-doc-lede {
+  margin-top: 20px;
+  max-width: 62ch;
+  font-size: 19px;
+  line-height: 1.5;
+}
+
+.lp-doc-date {
+  margin-top: 16px;
+  color: var(--lp-ink-soft);
+  font-size: 14px;
+  line-height: 19.6px;
+}
+
+.lp-doc-grid {
+  margin-top: 48px;
+  display: grid;
+  gap: 40px;
+}
+
+.lp-doc-toc {
+  padding-block: 20px;
+  border-block: 1px solid rgb(28 28 28 / 0.1);
+  font-size: 15px;
+  line-height: 1.4;
+}
+
+.lp-doc-toc p {
+  font-weight: 600;
+}
+
+.lp-doc-toc ul {
+  margin-top: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.lp-doc-toc a {
+  color: var(--lp-ink-soft);
+  transition: color 160ms var(--lp-ease-out);
+}
+
+.lp-doc-toc a:hover {
+  color: var(--lp-ink);
+}
+
+.lp-doc-body {
+  min-width: 0;
+  max-width: 70ch;
+}
+
+.lp-doc-body section {
+  /* An in-page link lands with air above the heading. */
+  scroll-margin-top: 32px;
+}
+
+.lp-doc-body section + section {
+  margin-top: 56px;
+}
+
+.lp-doc-body h2 {
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.025em;
+  text-wrap: balance;
+}
+
+.lp-doc-body :is(h2, p, ul, pre, .lp-doc-table) + * {
+  margin-top: 18px;
+}
+
+.lp-doc-body ul:not(.lp-doc-related) {
+  display: grid;
+  gap: 10px;
+  padding-left: 20px;
+  list-style: disc;
+}
+
+.lp-doc-body li::marker {
+  color: rgb(28 28 28 / 0.35);
+}
+
+.lp-doc code {
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: var(--lp-surface);
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 0.86em;
+  overflow-wrap: anywhere;
+}
+
+.lp-doc pre {
+  overflow-x: auto;
+  padding: 18px 20px;
+  border-radius: 14px;
+  background: linear-gradient(127deg, #212121 -3.14%, #141414 106.44%);
+  color: #fff;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.lp-doc pre code {
+  padding: 0;
+  background: none;
+  font-size: inherit;
+  overflow-wrap: normal;
+  white-space: pre;
+}
+
+.lp-doc-table {
+  overflow-x: auto;
+}
+
+.lp-doc table {
+  width: 100%;
+  min-width: 520px;
+  border-collapse: collapse;
+  font-size: 15px;
+  line-height: 1.5;
+  text-align: left;
+}
+
+.lp-doc th {
+  padding: 0 16px 12px 0;
+  border-bottom: 1px solid rgb(28 28 28 / 0.18);
+  font-weight: 600;
+}
+
+.lp-doc td {
+  padding: 14px 16px 14px 0;
+  border-bottom: 1px solid rgb(28 28 28 / 0.1);
+  vertical-align: top;
+}
+
+.lp-doc td:first-child {
+  width: 40%;
+}
+
+.lp-doc-related {
+  display: grid;
+}
+
+.lp-doc-related a {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-block: 16px;
+  border-top: 1px solid rgb(28 28 28 / 0.1);
+  font-weight: 500;
+}
+
+.lp-doc-related li:last-child a {
+  border-bottom: 1px solid rgb(28 28 28 / 0.1);
+}
+
+.lp-doc a:focus-visible {
+  outline: 2px solid var(--lp-blue);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+.lp ::selection {
+  background: rgb(0 113 227 / 0.16);
+}
+
+@media (min-width: 810px) {
+  .lp-doc {
+    padding-top: 80px;
+  }
+
+  .lp-doc h1 {
+    font-size: 56px;
+  }
+
+  .lp-doc-lede {
+    font-size: 21px;
+  }
+}
+
+@media (min-width: 1100px) {
+  .lp-doc-grid {
+    margin-top: 72px;
+    grid-template-columns: 240px minmax(0, 1fr);
+    gap: 72px;
+    align-items: start;
+  }
+
+  .lp-doc-toc {
+    position: sticky;
+    top: 32px;
+    padding-block: 0;
+    border: 0;
+  }
+}
