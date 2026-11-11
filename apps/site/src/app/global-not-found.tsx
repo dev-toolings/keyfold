@@ -1,10 +1,13 @@
 import type { Metadata } from "next";
+import { ICONS } from "@/lib/seo";
 import "./globals.css";
 
 // With two root layouts, unmatched URLs render this whole document (experimental.globalNotFound),
 // exported as out/404.html. It bypasses both layouts, hence its own <html> and stylesheet.
 export const metadata: Metadata = {
   title: "Page introuvable · Page not found | Keyfold",
+  // Bypassing the layouts also drops their icons. Next adds noindex to this page by itself.
+  icons: ICONS,
 };
 
 export default function GlobalNotFound() {
