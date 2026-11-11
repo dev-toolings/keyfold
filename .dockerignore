@@ -2,6 +2,10 @@
 **/node_modules
 apps/web/dist
 apps/web/dist-site
+apps/site/.next
+apps/site/out
+apps/site/next-env.d.ts
+apps/site/*.tsbuildinfo
 bin
 data
 .env*
