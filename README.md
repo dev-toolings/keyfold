@@ -56,6 +56,7 @@ The screenshots use a demo vault filled with fake items.
 apps/keyfold-server/ vault HTTP server
 apps/kf/        CLI and MCP server
 apps/web/        React web UI
+apps/site/       public product site (Next.js static export, French and English)
 packages/vault-core/  TypeScript crypto, API client, statistics, generator,
                       TOTP and breach check, shared by the TypeScript clients
 internal/        shared Go packages: vault, store, api, logger, agent,
@@ -74,8 +75,10 @@ go run ./apps/keyfold-server -listen 127.0.0.1:8717 -data ./data -web ./apps/web
 ```
 
 `-web` serves the built UI as static files when the directory exists.
-`make site-build` builds the public product site (landing pages only, no
-vault) into `apps/web/dist-site`: that is what keyfold.pulseview.app serves. For UI
+`make site-build` builds the public product site (`apps/site`: landing pages,
+`llms.txt` and `llms-full.txt`, no vault) as static files into `apps/site/out`;
+`make site-dev` starts its dev server. That is what keyfold.pulseview.app
+serves. For UI
 development, `apps/web/vite.config.ts` proxies `/api` to `127.0.0.1:8717`.
 
 `make dev` starts the server and the UI dev server together. `make` alone

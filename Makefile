@@ -13,7 +13,7 @@ C_WARN    := \033[33m
 C_ERR     := \033[31m
 C_RESET   := \033[0m
 
-.PHONY: help install dev server web-dev build web-build site-build fmt vet test typecheck lint ts-test check deploy-dry-run deploy-prod clean
+.PHONY: help install dev server web-dev site-dev build web-build site-build fmt vet test typecheck lint ts-test check deploy-dry-run deploy-prod clean
 
 # ─── Install / Setup ──────────────────────────────────────────────────────────
 
@@ -37,6 +37,9 @@ server: ## Start the vault server (LISTEN, DATA), serving apps/web/dist if built
 web-dev: ## Start the web UI dev server (proxies /api to the vault server)
 	@cd apps/web && bun run dev
 
+site-dev: ## Start the public product site dev server (apps/site, Next.js)
+	@cd apps/site && bun run dev
+
 # ─── Build ────────────────────────────────────────────────────────────────────
 
 build: ## Build the kf and keyfold-server binaries into bin/
@@ -48,9 +51,9 @@ web-build: ## Build the web UI into apps/web/dist
 	@cd apps/web && bun run build
 	@printf "$(C_OK)[make] web UI built in apps/web/dist$(C_RESET)\n"
 
-site-build: ## Build the public product site (landing pages only, no vault) into apps/web/dist-site
-	@cd apps/web && bun run build:site
-	@printf "$(C_OK)[make] product site built in apps/web/dist-site$(C_RESET)\n"
+site-build: ## Build the public product site (apps/site, static export) into apps/site/out
+	@cd apps/site && bun run build
+	@printf "$(C_OK)[make] product site built in apps/site/out$(C_RESET)\n"
 
 # ─── Check ────────────────────────────────────────────────────────────────────
 
@@ -68,8 +71,9 @@ test: ## Run the Go tests
 	@go test -count=1 ./...
 	@printf "$(C_OK)[make] go tests ok$(C_RESET)\n"
 
-typecheck: ## Typecheck the web UI and the shared TypeScript package
+typecheck: ## Typecheck the web UI, the product site and the shared TypeScript package
 	@cd apps/web && bunx tsc --noEmit
+	@cd apps/site && bun run typecheck
 	@cd packages/vault-core && bunx tsc --noEmit
 	@printf "$(C_OK)[make] typecheck ok$(C_RESET)\n"
 
@@ -99,9 +103,9 @@ deploy-prod: ## Deploy the public site (keyfold.pulseview.app) to production wit
 
 # ─── Clean ────────────────────────────────────────────────────────────────────
 
-clean: ## Remove built binaries and apps/web/dist (never the vault data)
-	@if [ -e bin ] || [ -e apps/web/dist ]; then \
-		rm -rf bin apps/web/dist; \
+clean: ## Remove built binaries, apps/web/dist and the apps/site build (never the vault data)
+	@if [ -e bin ] || [ -e apps/web/dist ] || [ -e apps/site/.next ] || [ -e apps/site/out ]; then \
+		rm -rf bin apps/web/dist apps/site/.next apps/site/out; \
 		printf "$(C_OK)[make] build outputs removed$(C_RESET)\n"; \
 	else \
 		printf "$(C_WARN)[make] nothing to clean$(C_RESET)\n"; \
