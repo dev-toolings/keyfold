@@ -1,0 +1,627 @@
+/* Styles of the public product page, ported from apps/web: the Tailwind tokens and
+   base rules its Button relies on (src/index.css), then the landing styles
+   (src/pages/landing.css) unchanged. */
+@import "tailwindcss";
+
+/* Class based, as in apps/web: dark: utilities must not follow the OS theme. */
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+}
+
+:root {
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --radius: 0.625rem;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+}
+
+/* The product's primary button: a dark pill with a cast shadow and a slow light
+   ring. It is the default variant of Button, so the vault and the landing page
+   share this one definition. Unlayered on purpose: it must win over the radius
+   and colour utilities of the other variants' base classes. */
+.btn-brand {
+  position: relative;
+  border-radius: 999px;
+  background: linear-gradient(220deg, #323232 0%, #141414 100%);
+  color: #fff;
+  /* Offsets and blurs follow the button height (--btn-h, set by each size). */
+  box-shadow:
+    calc(var(--btn-h, 2rem) * -0.42) calc(var(--btn-h, 2rem) * 0.32) calc(var(--btn-h, 2rem) * 0.2) rgb(0 0 0 / 0.04),
+    calc(var(--btn-h, 2rem) * -0.24) calc(var(--btn-h, 2rem) * 0.18) calc(var(--btn-h, 2rem) * 0.18) rgb(0 0 0 / 0.13),
+    calc(var(--btn-h, 2rem) * -0.1) calc(var(--btn-h, 2rem) * 0.08) calc(var(--btn-h, 2rem) * 0.12) rgb(0 0 0 / 0.23),
+    calc(var(--btn-h, 2rem) * -0.02) calc(var(--btn-h, 2rem) * 0.02) calc(var(--btn-h, 2rem) * 0.08) rgb(0 0 0 / 0.26);
+}
+
+/* A pill needs more room at its ends than a rounded rectangle. */
+.btn-brand:not([data-size^="icon"]) {
+  padding-inline: calc(var(--btn-h, 2rem) * 0.4);
+}
+
+.btn-brand::before {
+  position: absolute;
+  inset: 2px;
+  padding: 1px;
+  border-radius: inherit;
+  background: conic-gradient(from var(--btn-angle, 0deg) at 50% 50%, transparent 0deg, #fff 60deg, transparent 120deg);
+  content: "";
+  opacity: 0.35;
+  pointer-events: none;
+  mask:
+    linear-gradient(#000 0 0) content-box exclude,
+    linear-gradient(#000 0 0);
+  animation: btn-ring 6s linear infinite;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .btn-brand:hover:not(:active, :disabled) {
+    transform: translateY(-1px);
+  }
+}
+
+@property --btn-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+@keyframes btn-ring {
+  to {
+    --btn-angle: 360deg;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn-brand::before {
+    animation: none;
+  }
+}
+
+/* Product landing page. Values are measured, not taken from the Tailwind scale,
+   so they live here as tokens and a few component classes scoped under .lp. */
+
+@font-face {
+  font-family: "Geist";
+  src: url("/fonts/geist-latin-wght-normal.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Geist Mono";
+  src: url("/fonts/geist-mono-latin-wght-normal.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+.lp {
+  --lp-bg: #fcfcfc;
+  --lp-ink: #1c1c1c;
+  --lp-ink-soft: rgb(28 28 28 / 0.73);
+  --lp-blue: #0071e3;
+  --lp-surface: #f5f5f5;
+  --lp-gutter: 20px;
+  --lp-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --lp-ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+
+  min-height: 100svh;
+  overflow-x: clip;
+  background: var(--lp-bg);
+  color: var(--lp-ink);
+  font-family: "Geist", Arial, sans-serif;
+  font-size: 16px;
+  line-height: 22.4px;
+  letter-spacing: -0.24px;
+  -webkit-font-smoothing: antialiased;
+}
+
+@media (min-width: 810px) {
+  .lp {
+    --lp-gutter: 40px;
+  }
+}
+
+.lp-container {
+  width: 100%;
+  max-width: calc(1200px + 2 * var(--lp-gutter));
+  margin-inline: auto;
+  padding-inline: var(--lp-gutter);
+}
+
+.lp-mono {
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 14px;
+  line-height: 19.6px;
+  text-transform: uppercase;
+}
+
+/* Headings: 40/44 on phones, 78/85.8 and 60/66 on desktop. */
+.lp-h1 {
+  font-size: 40px;
+  font-weight: 600;
+  line-height: 44px;
+  letter-spacing: -1.6px;
+}
+
+.lp-h2 {
+  font-size: 32px;
+  font-weight: 600;
+  line-height: 35.2px;
+  letter-spacing: -1.28px;
+}
+
+@media (min-width: 810px) {
+  .lp-h1 {
+    font-size: 60px;
+    line-height: 66px;
+    letter-spacing: -2.4px;
+  }
+
+  .lp-h2 {
+    font-size: 44px;
+    line-height: 48.4px;
+    letter-spacing: -1.76px;
+  }
+}
+
+@media (min-width: 1200px) {
+  .lp-h1 {
+    font-size: 78px;
+    line-height: 85.8px;
+    letter-spacing: -3.12px;
+  }
+
+  .lp-h2 {
+    font-size: 60px;
+    line-height: 66px;
+    letter-spacing: -2.4px;
+  }
+}
+
+/* Buttons. One component (LpButton), one shape (pill), two sizes, two variants.
+   primary = open the vault: it is the app's Button (.btn-brand in index.css).
+   ghost = any other destination, styled here. */
+.lp-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: 999px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition:
+    transform 160ms var(--lp-ease-out),
+    background-color 200ms ease;
+}
+
+.lp-btn svg {
+  width: 16px;
+  height: 16px;
+  transition: transform 200ms var(--lp-ease-out);
+}
+
+.lp-btn-lg {
+  height: 50px;
+  padding: 0 20px 0 22px;
+}
+
+.lp-btn-sm {
+  height: 36px;
+  padding: 0 12px 0 14px;
+  gap: 6px;
+  font-size: 14px;
+}
+
+.lp-btn:focus-visible,
+.lp-arrow:focus-visible {
+  outline: 2px solid var(--lp-blue);
+  outline-offset: 3px;
+}
+
+/* Press feedback: the button gives a little under the finger. */
+.lp-btn:active,
+.lp-arrow:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.lp-btn-ghost {
+  background: #f7f7f7;
+  box-shadow:
+    inset 0 0 35.2px rgb(255 255 255 / 0.2),
+    inset 0 0 12px #fff,
+    0 0 64px rgb(0 0 0 / 0.02),
+    0 0 32px rgb(0 0 0 / 0.02),
+    0 0 16px rgb(0 0 0 / 0.02),
+    0 0 8px rgb(0 0 0 / 0.02);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .lp-btn-ghost:hover svg {
+    transform: translateX(2px);
+  }
+
+  .lp-btn-ghost:hover {
+    background: #f0f0f0;
+  }
+
+  .lp-arrow:hover:not(:disabled, :active) {
+    transform: scale(1.06);
+  }
+
+  /* The icon leans the way it points. */
+  .lp .btn-brand svg {
+    transition: transform 200ms var(--lp-ease-out);
+  }
+
+  .lp .btn-brand:hover svg {
+    transform: translate(2px, -2px);
+  }
+}
+
+/* The tilted blue label over the headline. */
+.lp-badge {
+  position: absolute;
+  /* Phones wrap the headline over four lines: the label sits above it there. */
+  top: -34px;
+  left: 50%;
+  display: inline-flex;
+  height: 28px;
+  align-items: center;
+  padding: 0 8px;
+  border-radius: 8px;
+  background: var(--lp-blue);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0;
+  white-space: nowrap;
+  transform: translateX(-50%) rotate(3deg);
+  animation: lp-badge 500ms var(--lp-ease-out) 620ms both;
+  box-shadow:
+    0 16px 16px rgb(0 113 227 / 0.12),
+    0 8px 8px rgb(0 113 227 / 0.12),
+    0 4px 4px rgb(0 113 227 / 0.12),
+    0 2px 2px rgb(0 113 227 / 0.12),
+    inset 0 0.5px 0.5px rgb(255 255 255 / 0.25);
+}
+
+@media (min-width: 810px) {
+  .lp-badge {
+    top: 40px;
+  }
+}
+
+@media (min-width: 1200px) {
+  .lp-badge {
+    top: 52px;
+    height: 34px;
+    padding: 0 10px;
+    font-size: 14px;
+  }
+}
+
+/* Faint dotted columns behind the hero, fading out downwards. The four
+   columns sit at fixed offsets from the page centre. */
+.lp-columns {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 1082px;
+  height: 580px;
+  margin-left: -541px;
+  pointer-events: none;
+  opacity: 0.09;
+  animation: lp-columns 1400ms ease 200ms both;
+  background:
+    linear-gradient(var(--lp-ink) 0 0) 0 0 / 180px 490px no-repeat,
+    linear-gradient(var(--lp-ink) 0 0) 180px 0 / 180px 580px no-repeat,
+    linear-gradient(var(--lp-ink) 0 0) 721px 0 / 180px 580px no-repeat,
+    linear-gradient(var(--lp-ink) 0 0) 902px 0 / 180px 490px no-repeat;
+  mask-image: radial-gradient(circle, #000 1.1px, transparent 1.5px), linear-gradient(#000 10%, transparent 92%);
+  mask-size:
+    6px 6px,
+    100% 100%;
+  mask-composite: intersect;
+}
+
+.lp-tag {
+  display: inline-flex;
+  height: 32px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px 0 10px;
+  border-radius: 999px;
+  background: rgb(0 113 227 / 0.04);
+  color: var(--lp-blue);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.lp-tag svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Showcase */
+.lp-card {
+  border-radius: 18px;
+  background: linear-gradient(127deg, #212121 -3.14%, #141414 106.44%);
+  color: #fff;
+}
+
+.lp-arrow {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow:
+    0 0 0 1px rgb(0 0 0 / 0.04),
+    0 4px 12px rgb(0 0 0 / 0.06);
+  transition:
+    opacity 200ms ease,
+    transform 160ms var(--lp-ease-out);
+}
+
+.lp-arrow:disabled {
+  box-shadow: none;
+  opacity: 0.35;
+}
+
+.lp-arrow svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* FAQ: native <details>, one question per row, the chevron turns when open. */
+.lp-faq {
+  border-top: 1px solid rgb(28 28 28 / 0.1);
+}
+
+.lp-faq:last-child {
+  border-bottom: 1px solid rgb(28 28 28 / 0.1);
+}
+
+.lp-faq summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding-block: 22px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.lp-faq summary::-webkit-details-marker {
+  display: none;
+}
+
+.lp-faq summary:focus-visible {
+  outline: 2px solid var(--lp-blue);
+  outline-offset: 3px;
+}
+
+.lp-faq h3 {
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 26px;
+  letter-spacing: -0.4px;
+}
+
+.lp-faq summary svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  transition: transform 200ms var(--lp-ease-out);
+}
+
+.lp-faq[open] summary svg {
+  transform: rotate(180deg);
+}
+
+.lp-faq p {
+  max-width: 720px;
+  padding-bottom: 24px;
+  color: var(--lp-ink-soft);
+}
+
+/* Motion. Page load: header, headline lines, label, then the rest, 80 ms apart.
+   On scroll: each block rises in once. Carousel: content comes from the side the arrow points to. */
+.lp-fade {
+  animation: lp-fade 600ms ease both;
+}
+
+.lp-rise {
+  animation: lp-rise 700ms var(--lp-ease-out) both;
+}
+
+/* A headline line slides up from behind its own baseline. */
+.lp-line {
+  display: block;
+  overflow: hidden;
+  /* Room for descenders, taken back so the line height does not change. */
+  margin-block: -0.1em;
+  padding-block: 0.1em;
+}
+
+.lp-line > span {
+  display: block;
+  animation: lp-line 800ms var(--lp-ease-out) calc(80ms + var(--i, 0) * 90ms) both;
+}
+
+[data-reveal="lines"] .lp-line > span {
+  animation: none;
+  transform: translateY(110%);
+  transition: transform 800ms var(--lp-ease-out) calc(var(--i, 0) * 90ms);
+}
+
+[data-reveal="lines"][data-visible] .lp-line > span {
+  transform: none;
+}
+
+[data-reveal]:not([data-reveal="lines"]) {
+  opacity: 0;
+  transform: translateY(16px);
+  transition:
+    opacity 600ms var(--lp-ease-out) calc(var(--i, 0) * 60ms),
+    transform 600ms var(--lp-ease-out) calc(var(--i, 0) * 60ms);
+}
+
+[data-reveal][data-visible]:not([data-reveal="lines"]) {
+  opacity: 1;
+  transform: none;
+}
+
+/* The command is typed once, then the caret blinks three times and leaves. */
+.lp-typed {
+  display: inline-block;
+  position: relative;
+  clip-path: inset(0 100% 0 0);
+  animation: lp-type 1100ms steps(var(--chars)) 900ms forwards;
+}
+
+.lp-swap {
+  animation: lp-swap 420ms var(--lp-ease-out) both;
+}
+
+/* Lines and tiles of an illustration follow their card, 60 ms apart. */
+.lp-row {
+  animation: lp-row 420ms var(--lp-ease-out) calc(120ms + var(--i, 0) * 60ms) both;
+}
+
+.lp-bar {
+  transform-origin: bottom;
+  animation: lp-bar 600ms var(--lp-ease-out) calc(260ms + var(--i, 0) * 40ms) both;
+}
+
+@keyframes lp-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes lp-rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+}
+
+@keyframes lp-line {
+  from {
+    transform: translateY(110%);
+  }
+}
+
+@keyframes lp-badge {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) rotate(-4deg) scale(0.9);
+  }
+}
+
+@keyframes lp-columns {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes lp-type {
+  to {
+    clip-path: inset(0 0 0 0);
+  }
+}
+
+@keyframes lp-swap {
+  from {
+    opacity: 0;
+    transform: translateY(var(--lp-from, 16px));
+  }
+}
+
+@keyframes lp-row {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+@keyframes lp-bar {
+  from {
+    transform: scaleY(0.06);
+  }
+}
+
+/* Reduced motion: keep the fades, drop every movement. */
+@media (prefers-reduced-motion: reduce) {
+  .lp-line > span,
+  .lp-bar,
+  .lp-typed {
+    animation: none;
+  }
+
+  .lp-typed {
+    clip-path: none;
+  }
+
+  .lp-rise,
+  .lp-swap,
+  .lp-row,
+  .lp-badge {
+    animation-name: lp-fade;
+  }
+
+  [data-reveal="lines"] .lp-line > span,
+  [data-reveal]:not([data-reveal="lines"]) {
+    transform: none;
+    transition: opacity 300ms ease;
+  }
+
+  [data-reveal="lines"]:not([data-visible]) {
+    opacity: 0;
+  }
+
+  [data-reveal="lines"] {
+    transition: opacity 300ms ease;
+  }
+
+  .lp-btn:active,
+  .lp-arrow:active:not(:disabled) {
+    transform: none;
+  }
+
+  .lp-faq summary svg {
+    transition: none;
+  }
+}
