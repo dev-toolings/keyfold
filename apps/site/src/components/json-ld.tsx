@@ -23,10 +23,11 @@ export function JsonLd({ lang }: { lang: Lang }) {
         description: definition,
         applicationCategory: "SecurityApplication",
         operatingSystem: "Linux",
-        url,
+        // Same @id on both pages, so the same url; only the FAQ is per language.
+        url: `${SITE_URL}/`,
         image: new URL(OG_IMAGE.url, SITE_URL).href,
-        inLanguage: lang,
-        codeRepository: REPO_URL,
+        // codeRepository belongs to SoftwareSourceCode, not to SoftwareApplication.
+        sameAs: REPO_URL,
       },
       {
         "@type": "FAQPage",
