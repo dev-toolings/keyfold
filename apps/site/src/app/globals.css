@@ -480,22 +480,28 @@
   animation: lp-line 800ms var(--lp-ease-out) calc(80ms + var(--i, 0) * 90ms) both;
 }
 
-[data-reveal="lines"] .lp-line > span {
-  animation: none;
-  transform: translateY(110%);
-  transition: transform 800ms var(--lp-ease-out) calc(var(--i, 0) * 90ms);
+/* The hidden start states need the script that reveals them (Reveal): without
+   JavaScript the prerendered page must stay readable. */
+@media (scripting: enabled) {
+  [data-reveal="lines"] .lp-line > span {
+    animation: none;
+    transform: translateY(110%);
+    transition: transform 800ms var(--lp-ease-out) calc(var(--i, 0) * 90ms);
+  }
 }
 
 [data-reveal="lines"][data-visible] .lp-line > span {
   transform: none;
 }
 
-[data-reveal]:not([data-reveal="lines"]) {
-  opacity: 0;
-  transform: translateY(16px);
-  transition:
-    opacity 600ms var(--lp-ease-out) calc(var(--i, 0) * 60ms),
-    transform 600ms var(--lp-ease-out) calc(var(--i, 0) * 60ms);
+@media (scripting: enabled) {
+  [data-reveal]:not([data-reveal="lines"]) {
+    opacity: 0;
+    transform: translateY(16px);
+    transition:
+      opacity 600ms var(--lp-ease-out) calc(var(--i, 0) * 60ms),
+      transform 600ms var(--lp-ease-out) calc(var(--i, 0) * 60ms);
+  }
 }
 
 [data-reveal][data-visible]:not([data-reveal="lines"]) {
