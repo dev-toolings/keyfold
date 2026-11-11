@@ -1,6 +1,8 @@
 // Short product summary for answer engines, built from the page content so it cannot drift.
 import { CONTENT } from "@/content/landing";
+import { PAGES } from "@/content/pages";
 import { PAGE_URL, plainText, README_URL } from "@/lib/llms";
+import { docPath } from "@/lib/seo";
 import { REPO_URL, SITE_URL } from "@/lib/site";
 
 // Without it, output: "export" refuses the route at build time.
@@ -21,6 +23,13 @@ export function GET(): Response {
     `- [Product page (French)](${PAGE_URL.fr}): features, security model, FAQ`,
     `- [Product page (English)](${PAGE_URL.en}): same content in English`,
     `- [Full description for language models](${SITE_URL}/llms-full.txt): a self-contained factual summary in English`,
+    "",
+    "## Documentation",
+    "",
+    ...PAGES.map((page) => {
+      const en = page.content.en;
+      return `- [${en.h1}](${SITE_URL}${docPath(page, "en")}): ${en.description} French version: ${SITE_URL}${docPath(page, "fr")}`;
+    }),
     "",
     "## Source and documentation",
     "",
