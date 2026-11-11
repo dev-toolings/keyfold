@@ -1,0 +1,11 @@
+{
+  "name": "keyfold",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "devDependencies": {
+    "@biomejs/biome": "^2.6.6"
+  }
+}

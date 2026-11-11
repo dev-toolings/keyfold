@@ -1,0 +1,24 @@
+# Public product page: / (French) and /en (English).
+# The vault app (/personal/) and the API (/api/) are private and never crawled.
+
+User-agent: *
+Allow: /
+Allow: /en
+Disallow: /personal/
+Disallow: /api/
+
+# AI crawlers: welcome on the public pages only.
+User-agent: GPTBot
+User-agent: OAI-SearchBot
+User-agent: ChatGPT-User
+User-agent: ClaudeBot
+User-agent: Claude-SearchBot
+User-agent: PerplexityBot
+User-agent: Google-Extended
+User-agent: Applebot-Extended
+Allow: /
+Allow: /en
+Disallow: /personal/
+Disallow: /api/
+
+Sitemap: https://keyfold.pulseview.app/sitemap.xml

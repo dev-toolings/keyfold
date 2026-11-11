@@ -1,0 +1,104 @@
+# Keyfold: full description
+
+Keyfold is a self-hosted secrets vault for one person: it keeps passwords, API tokens, SSH passphrases and notes encrypted with age on the operator's own machine, with a web UI, a command line tool (kf) and an MCP server for AI agents.
+
+- Product page: https://keyfold.pulseview.app/ (French), https://keyfold.pulseview.app/en (English)
+- Source code: https://github.com/dev-toolings/Keyfold
+- Reference documentation: the README at the root of the repository
+
+## Who it is for
+
+One operator (a developer or a system administrator) who wants their secrets on hardware they control, and who needs scripts, programs and AI agents to use those secrets without printing them. It is not a team or family password manager: there is one vault, one master password, and no sharing between users.
+
+## Components
+
+- `keyfold-server`: a Go HTTP server. It stores encrypted files in a data directory (`./data` by default) and listens on `127.0.0.1:8717` by default. It can also serve the built web UI.
+- `kf`: a Go command line tool. It talks to the server, keeps the vault unlocked through a local agent, and includes an MCP server (`kf mcp`).
+- Web UI: a React single page app. `/` and `/en` are the public product page; the vault app lives under `/personal` (unlock, dashboard, vault, health, settings).
+
+All three share one vault. The HTTP API is versioned under `/api/v1`.
+
+## How encryption works
+
+- Encryption is client side only, with age (https://age-encryption.org). The Go code uses `filippo.io/age`; the browser uses the `age-encryption` TypeScript package. A test suite checks that both produce files the other can read.
+- The vault identity is an X25519 age key. It is encrypted with the master password through the age scrypt recipient (scrypt work factor logN 18).
+- Each item, its name included, is a separate age file encrypted to that identity. Attachments are encrypted in the browser with age too, and stored apart in `data/blobs/`.
+- The server never receives the master password, the identity or a secret value. It sees ciphertext only.
+- A new vault needs a master password of at least 16 characters. The encrypted identity can be downloaded by anyone who reaches the server (it exposes no more than a stolen disk would), so the master password is the barrier against an offline attack.
+- Optional second factor (TOTP): with it on, the encrypted identity is only handed out against a valid code. A code works once; five wrong codes in a row lock every check for 15 minutes. The TOTP secret is stored in clear on the server (`data/totp.json`, mode 0600), so TOTP does not protect a stolen disk.
+- API access needs a session token, obtained by decrypting a random challenge with the identity. Tokens live in server memory only (15 minutes idle expiry): a server restart locks every client.
+- Changing the master password re-wraps the same identity; items are not re-encrypted.
+
+## What an item holds
+
+Kinds: `login` (default), `token`, `note`, `identity`, `ssh-key`, `ssh-passphrase`. An item can hold an identifier, the secret, web addresses, a TOTP secret, custom fields (hidden or not), a note, a folder, a favorite flag, attachments (up to 100 MiB each by default, set by `keyfold-server -max-blob`) and its 20 previous values, each one restorable.
+
+## Command line (kf)
+
+The server URL comes from `-server`, then the `KEYFOLD_SERVER` environment variable, then `http://127.0.0.1:8717`.
+
+- `kf init`: asks the master password twice and creates the vault.
+- `kf unlock [-ttl 1h]`: decrypts the identity and starts a background agent on a `0600` socket in a `0700` directory. The identity reaches the agent through a pipe, never argv or environment.
+- `kf lock`: stops the agent.
+- `kf get <name>`: prints the value to stdout. Refused when stdout is a terminal, so a secret is not shown on screen by accident.
+- `kf set <name> [-kind K] [-note N]`: reads the value from stdin. The old value goes to the item history.
+- `kf read kf://<name>/<field>`: prints one field (`value`, `username`, `note`, `url`, `totp` or a custom field). Refused on a terminal.
+- `kf run -env VAR=kf://<name>/<field> [-env ...] -- cmd [args]`: runs `cmd` with the secrets in its environment, never in argv or on disk.
+- `kf inject -i template [-o out]`: replaces every `{{ kf://name/field }}` in a template. The output file is written with mode `0600`.
+- `kf generate [-len 24] [-symbols=false] [-words N]`: prints a random password, or a passphrase from the EFF large wordlist. Stores nothing.
+- `kf totp <name>`: prints the item's current TOTP code.
+- `kf export [-format keyfold|bitwarden-json] [-o file] (-encrypt | -plaintext)`: exports every item. `-encrypt` writes an age file protected by a passphrase of at least 16 characters; plaintext must be asked for explicitly. Attachments are left out.
+- `kf import -format keyfold|bitwarden-json|1password-1pux|csv <file>`: adds the items of an export. CSV reads the Chrome, Firefox, Bitwarden and 1Password headers. Items already present are skipped; payment cards are skipped and listed.
+- `kf list`: names and kinds, never values.
+- `kf rm <name>`: deletes an item and its attachments.
+- `kf migrate [-apply]`: rewrites items stored in an older format.
+
+Example, start a program with its database password and no `.env` file:
+
+    kf run -env DB_PASSWORD=kf://prod-db/password -- ./server
+
+## MCP server for AI agents
+
+`kf mcp` serves three tools over stdin/stdout, through the local agent (run `kf unlock` first):
+
+- `list_items`: name, kind, creation and last modification dates of each item.
+- `generate_item`: creates an item holding a random secret generated and encrypted locally. It refuses a name that already exists.
+- `vault_health`: server facts (item and attachment counts, sizes, free disk space, TOTP on or off, open sessions) and the dashboard indicators (stale, reused, short, weak, website without TOTP) as item names.
+
+No-secret guarantee: no tool returns a value or a note, and no tool edits or deletes an item. Whatever a tool returns enters the model's conversation and its transcripts, so values stay out by design. An agent that needs a secret for a program uses `kf run` or `kf inject` instead.
+
+Registration in Claude Code: `claude mcp add keyfold -- /path/to/bin/kf mcp`.
+
+## Web UI
+
+- Vault: create, edit and search items; a full item sheet with history, TOTP code and countdown, custom fields and attachments.
+- Generator: 24 character passwords or 6 word EFF passphrases.
+- A copied secret is cleared from the clipboard after 30 seconds.
+- Dashboard: items to renew, reused values, short passwords, weak passwords (estimated entropy under 60 bits), websites without a TOTP secret. All computed in the browser.
+- Breach check against Have I Been Pwned: off by default; once allowed in Settings, it runs on request and sends only the first 5 characters of each password's SHA-1 (k-anonymity range API).
+- Health page: what the server stores, as seen from ciphertext only.
+- Settings: TOTP second factor and master password change.
+
+The web UI keeps the identity and the session token in memory only.
+
+## Import and export formats
+
+- Import: Keyfold's own format (`kf`), Bitwarden JSON (`bitwarden-json`), 1Password export (`1password-1pux`), CSV (Chrome, Firefox, Bitwarden and 1Password headers).
+- Export: `kf` or `bitwarden-json`, either encrypted with age (passphrase) or plaintext when asked for explicitly.
+- Import and export are available in the CLI only, not in the web UI.
+
+## Self-hosting
+
+- One Go module and one Bun workspace at the repository root. `make build` builds `bin/kf` and `bin/keyfold-server`; `make help` lists every target.
+- Run the server: `go run ./apps/keyfold-server -listen 127.0.0.1:8717 -data ./data -web ./apps/web/dist`.
+- Logs are JSON lines with a request ID; only method, path, status and duration are logged, never a header, body or query string.
+- Recovery when the TOTP phone is lost: `keyfold-server -disable-totp -data ./data` on the server machine.
+
+## Limits and what it does not do yet
+
+- No TLS: the server speaks plain HTTP and must stay on 127.0.0.1.
+- No service unit, container image or reverse proxy setup.
+- No backup of the data directory.
+- Exports leave attachments out.
+- No browser extension, no autofill, no mobile app, no sharing between users.
+- The repository has no license file yet.

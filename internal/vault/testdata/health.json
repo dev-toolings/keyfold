@@ -1,0 +1,22 @@
+{
+  "now": "2026-06-15T12:00:00Z",
+  "items": [
+    {"v": 2, "name": "fake-old", "kind": "token", "value": "fake-token-value-0123456789", "note": "", "updated_at": "2026-01-01T00:00:00Z"},
+    {"v": 2, "name": "fake-short", "kind": "login", "value": "Fake-pw-1", "note": "", "updated_at": "2026-06-10T00:00:00Z"},
+    {"v": 2, "name": "fake-weak", "kind": "login", "value": "01234567890123456", "note": "", "updated_at": "2026-06-10T00:00:00Z"},
+    {"v": 2, "name": "fake-reuse-a", "kind": "login", "value": "Fake-Reused-Value-0123456789!", "note": "", "updated_at": "2026-06-10T00:00:00Z", "urls": ["https://fake.example"], "totp": "JBSWY3DPEHPK3PXP"},
+    {"v": 2, "name": "fake-reuse-b", "kind": "ssh-passphrase", "value": "Fake-Reused-Value-0123456789!", "note": "", "updated_at": "2026-06-10T00:00:00Z"},
+    {"v": 2, "name": "fake-site", "kind": "login", "value": "fake-word-list-here-ok", "note": "", "updated_at": "2026-06-10T00:00:00Z", "urls": ["https://fake.example"]},
+    {"v": 2, "name": "fake-bookmark-a", "kind": "login", "value": "", "note": "", "updated_at": "2026-06-10T00:00:00Z"},
+    {"v": 2, "name": "fake-bookmark-b", "kind": "login", "value": "", "note": "", "updated_at": "2026-06-10T00:00:00Z"},
+    {"v": 2, "name": "fake-note", "kind": "note", "value": "short", "note": "", "updated_at": "2026-06-10T00:00:00Z"}
+  ],
+  "want": {
+    "items": 9,
+    "stale": ["fake-old"],
+    "reused": ["fake-reuse-a", "fake-reuse-b"],
+    "short": ["fake-short"],
+    "weak": ["fake-short", "fake-weak"],
+    "no_totp": ["fake-site"]
+  }
+}

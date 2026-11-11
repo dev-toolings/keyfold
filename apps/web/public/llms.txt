@@ -1,0 +1,20 @@
+# Keyfold
+
+> Keyfold is a self-hosted secrets vault for one person. It keeps passwords, API tokens, SSH passphrases and notes encrypted with age (X25519 identity, protected by the master password through scrypt) on the operator's own machine. It has a Go server, a Go command line tool (`kf`) with an MCP server for AI agents, and a React web UI. The server only ever stores encrypted files.
+
+Encryption happens in the browser or in the CLI, never on the server. No MCP tool returns a secret value. The server speaks plain HTTP and is meant to run on 127.0.0.1 for now (no TLS yet).
+
+## Product page
+
+- [Product page (French)](https://keyfold.pulseview.app/): features, security model, FAQ
+- [Product page (English)](https://keyfold.pulseview.app/en): same content in English
+- [Full description for language models](https://keyfold.pulseview.app/llms-full.txt): a self-contained factual summary in English
+
+## Source and documentation
+
+- [GitHub repository](https://github.com/dev-toolings/Keyfold): Go server, CLI, MCP server and web UI source code
+- [README](https://github.com/dev-toolings/Keyfold/blob/main/README.md): install, CLI commands, MCP tools, security model, what is not done
+
+## Optional
+
+- [age encryption](https://age-encryption.org): the file encryption format and tool the vault is built on
