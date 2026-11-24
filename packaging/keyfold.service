@@ -7,6 +7,7 @@ After=network.target
 DynamicUser=yes
 StateDirectory=keyfold
 StateDirectoryMode=0700
+# See the Reverse proxy requirements section in packaging/README.md.
 Environment=KEYFOLD_ALLOWED_HOSTS=vault.example.internal
 ExecStart=/usr/local/bin/keyfold-server -listen 127.0.0.1:8717 -data /var/lib/keyfold -web /usr/local/share/keyfold/web
 Restart=on-failure

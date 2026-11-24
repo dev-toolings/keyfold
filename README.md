@@ -80,9 +80,12 @@ go run ./apps/keyfold-server -listen 127.0.0.1:8717 -data ./data -web ./apps/web
 `-allowed-hosts` (or `KEYFOLD_ALLOWED_HOSTS`) lists the host names accepted
 besides loopback ones, comma separated: the names a TLS reverse proxy in front
 of the server answers to. Any other `Host` gets 403, for the API and the web UI
-alike. The reverse proxy must append the connecting client's IP address to
-`X-Forwarded-For`. Keyfold uses the last address in that header only when
-the proxy connects over loopback.
+alike. The reverse proxy must keep the original `Host` and append the connecting
+client's IP address to `X-Forwarded-For`. Keyfold uses the last address in that
+header only when the proxy connects over loopback. If a same-machine proxy sends
+a loopback `Host` with no forwarding headers, Keyfold treats remote clients as
+local, letting them create the vault without an install token, bypass per-client
+rate limits, and retrieve the encrypted identity without enabling TOTP.
 
 `GET /api/v1/alive` gets HTTP 403 from the host guard if `Host` is neither
 loopback nor declared. With an allowed `Host`, the probe returns HTTP 404 if
