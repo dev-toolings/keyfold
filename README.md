@@ -313,7 +313,7 @@ claude mcp add keyfold -- "$PWD/bin/kf" mcp
   reverse proxy in front of it and declare its name with `-allowed-hosts`.
 - Hardening for an untrusted network: five wrong TOTP codes from anyone lock
   every check. Keep it off the internet.
-- Hosting: no service unit, container or reverse proxy setup.
+- Hosting: see [packaging/](packaging/) for the container, reverse proxy and systemd unit.
 - Scheduled backups and a copy off the machine: `-backup` below is run by hand.
 
 ## Backup and restore

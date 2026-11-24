@@ -13,7 +13,7 @@ C_WARN    := \033[33m
 C_ERR     := \033[31m
 C_RESET   := \033[0m
 
-.PHONY: help install dev server web-dev site-dev build web-build site-build fmt vet test typecheck lint ts-test check deploy-dry-run deploy-prod clean
+.PHONY: help install dev server web-dev site-dev build image web-build site-build fmt vet test typecheck lint ts-test check deploy-dry-run deploy-prod clean
 
 # ─── Install / Setup ──────────────────────────────────────────────────────────
 
@@ -50,6 +50,11 @@ build: ## Build the kf and keyfold-server binaries into bin/
 		go build -ldflags "$$ldflags" -o bin/kf ./apps/kf && \
 		go build -ldflags "$$ldflags" -o bin/keyfold-server ./apps/keyfold-server
 	@printf "$(C_OK)[make] built bin/kf and bin/keyfold-server$(C_RESET)\n"
+
+image: ## Build the vault container image tagged keyfold:$(VERSION)
+	@docker build --file packaging/Dockerfile --build-arg VERSION="$(VERSION)" \
+		--build-arg COMMIT="$(COMMIT)" --tag "keyfold:$(VERSION)" .
+	@printf "$(C_OK)[make] built image %s$(C_RESET)\n" "keyfold:$(VERSION)"
 
 web-build: ## Build the web UI into apps/web/dist
 	@cd apps/web && bun run build
