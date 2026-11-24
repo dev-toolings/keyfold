@@ -110,6 +110,11 @@ export class VaultClient {
       // A server started before the API moved under /api/v1 answers 404 here.
       throw new Error("Le serveur du coffre ne connaît pas cette version de l'API. Relancez-le (make dev).");
     }
+    if (res.status === 403 && path === "/api/v1/init") {
+      throw new Error(
+        "Jeton d'installation manquant ou incorrect. Il figure dans le journal du serveur au premier démarrage.",
+      );
+    }
     if (res.status === 412) {
       throw new ConflictError("Cet élément a été modifié ailleurs entre-temps : rechargez la page et recommencez.");
     }
@@ -157,16 +162,18 @@ export class VaultClient {
   }
 
   /** First run: creates the identity, uploads it wrapped, then unlocks. */
-  async create(password: string): Promise<void> {
+  async create(password: string, installToken?: string): Promise<void> {
     if ([...password].length < MIN_MASTER_PASSWORD_LENGTH) {
       throw new Error(`Le mot de passe principal doit faire au moins ${MIN_MASTER_PASSWORD_LENGTH} caractères.`);
     }
     const id = await generateX25519Identity();
     const wrapped = await wrapIdentity(id, password);
-    await this.api("POST", "/api/v1/init", {
-      identity: toBase64(wrapped),
-      recipient: await identityToRecipient(id),
-    });
+    await this.api(
+      "POST",
+      "/api/v1/init",
+      { identity: toBase64(wrapped), recipient: await identityToRecipient(id) },
+      installToken ? { "X-Install-Token": installToken } : undefined,
+    );
     await this.unlock(password);
   }
 

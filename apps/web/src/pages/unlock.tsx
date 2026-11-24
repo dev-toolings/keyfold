@@ -80,9 +80,11 @@ export function UnlockPage() {
 function PasswordForm({ first, totp, onDone }: { first: boolean; totp: boolean; onDone: () => void }) {
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
+  const [installToken, setInstallToken] = useState("");
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const needsInstallToken = first && !["localhost", "127.0.0.1", "[::1]", "::1"].includes(window.location.hostname);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -93,7 +95,7 @@ function PasswordForm({ first, totp, onDone }: { first: boolean; totp: boolean; 
     }
     setBusy(true);
     try {
-      await (first ? vault.create(password) : vault.unlock(password, code.trim()));
+      await (first ? vault.create(password, installToken.trim()) : vault.unlock(password, code.trim()));
       onDone();
     } catch (err) {
       setError(errorMessage(err));
@@ -136,6 +138,23 @@ function PasswordForm({ first, totp, onDone }: { first: boolean; totp: boolean; 
                 value={confirm}
                 onChange={(e) => setConfirm(e.target.value)}
               />
+            </div>
+          )}
+          {needsInstallToken && (
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="install-token">Jeton d'installation</Label>
+              <Input
+                id="install-token"
+                type="password"
+                autoComplete="off"
+                aria-describedby="install-token-help"
+                required
+                value={installToken}
+                onChange={(e) => setInstallToken(e.target.value)}
+              />
+              <p id="install-token-help" className="text-sm text-muted-foreground">
+                Le jeton figure dans le journal du serveur au premier démarrage.
+              </p>
             </div>
           )}
           {!first && totp && !vault.hasDownloadedIdentity() && (
