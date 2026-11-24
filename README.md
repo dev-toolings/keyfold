@@ -24,7 +24,8 @@ A Go server stores encrypted files only, a Go CLI (`kf`) hands secrets to
 scripts without ever printing them to a terminal, and a React web UI manages
 logins, API tokens, notes and SSH keys. An MCP server lets AI agents list and
 generate secrets without ever seeing a value. All of them share one vault.
-Local use only for now (`127.0.0.1`).
+It listens on `127.0.0.1`; your other devices can reach it through a TLS reverse
+proxy (`-allowed-hosts`), on a network you trust only (see [Not done](#not-done)).
 
 ## Screenshots
 
@@ -102,7 +103,8 @@ go build -o bin/kf ./apps/kf
 
 The server URL comes from `-server`, then `KEYFOLD_SERVER`, then
 `http://127.0.0.1:8717`. A URL that is not a loopback address must start with
-`https://`: `kf` refuses to send a session token in clear over a network.
+`https://`: `kf` refuses to send a session token in clear over a network, and
+never follows a redirect.
 
 | Command | What it does |
 |---|---|
@@ -243,7 +245,10 @@ claude mcp add keyfold -- "$PWD/bin/kf" mcp
 
 ## Not done
 
-- TLS: the server speaks plain HTTP and must stay on `127.0.0.1`.
+- TLS: the server speaks plain HTTP. To reach it from another device, put a TLS
+  reverse proxy in front of it and declare its name with `-allowed-hosts`.
+- Hardening for an untrusted network: creating the vault needs no proof, and
+  five wrong TOTP codes from anyone lock every check. Keep it off the internet.
 - Hosting: no service unit, container or reverse proxy setup.
 - Backups of the data directory.
 

@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,6 +46,17 @@ func TestGetRefusesTerminal(t *testing.T) {
 	}
 }
 
+// runtimeDir points XDG_RUNTIME_DIR at a new directory only this user can
+// write to, as the real one is: the agent refuses any other.
+func runtimeDir(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_RUNTIME_DIR", dir)
+}
+
 // setupVault starts a server on a new vault and an agent holding its identity.
 func setupVault(t *testing.T) (string, *store.Store, *age.X25519Identity) {
 	t.Helper()
@@ -63,7 +76,7 @@ func setupVault(t *testing.T) (string, *store.Store, *age.X25519Identity) {
 	ts := httptest.NewServer(api.New(st, api.Options{}))
 	t.Cleanup(ts.Close)
 
-	t.Setenv("XDG_RUNTIME_DIR", dir)
+	runtimeDir(t)
 	l, err := agent.Listen()
 	if err != nil {
 		t.Fatal(err)
@@ -170,21 +183,50 @@ func TestMigrateThenSetKeepsFields(t *testing.T) {
 }
 
 func TestPlainHTTPIsOnlyAcceptedForLoopback(t *testing.T) {
-	t.Setenv("XDG_RUNTIME_DIR", t.TempDir()) // no agent: lock needs neither one nor the server
+	// Refused before any network call; the accepted ones fail later, on a closed port.
 	for server, refused := range map[string]bool{
-		"http://192.0.2.10:8717":   true,
-		"http://vault.example":     true,
-		"ftp://127.0.0.1":          true,
-		"http://127.0.0.1:8717":    false,
-		"http://localhost:8717":    false,
-		"http://[::1]:8717":        false,
-		"https://vault.example":    false,
-		"https://192.0.2.10:8717/": false,
+		"http://192.0.2.10:8717": true,
+		"http://vault.example":   true,
+		"ftp://127.0.0.1":        true,
+		"http://127.0.0.1:1":     false,
+		"http://localhost:1":     false,
+		"http://[::1]:1":         false,
+		"https://127.0.0.1:1":    false,
 	} {
-		var stderr bytes.Buffer
-		code := run([]string{"-server", server, "lock"}, fileWith(t, ""), fileWith(t, ""), &stderr)
-		if got := code == 2 && bytes.Contains(stderr.Bytes(), []byte("https://")); got != refused {
-			t.Errorf("%s: refused = %v, want %v (exit %d, stderr %q)", server, got, refused, code, stderr.String())
+		err := (&client{base: server}).do("GET", "/api/v1/status", nil, nil)
+		if got := err != nil && strings.Contains(err.Error(), "plain http"); got != refused {
+			t.Errorf("%s: refused = %v, want %v (error: %v)", server, got, refused, err)
 		}
+	}
+}
+
+func TestLocalCommandsIgnoreTheServerURL(t *testing.T) {
+	runtimeDir(t)
+	t.Setenv("KEYFOLD_SERVER", "http://192.0.2.10:8717")
+	var stderr bytes.Buffer
+	if code := run([]string{"lock"}, fileWith(t, ""), fileWith(t, ""), &stderr); code != 0 {
+		t.Errorf("kf lock: exit %d, stderr %q", code, stderr.String())
+	}
+}
+
+func TestRedirectIsNotFollowed(t *testing.T) {
+	var leaked string
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		leaked = r.Header.Get("Authorization") + r.Header.Get("X-TOTP-Code")
+	}))
+	t.Cleanup(elsewhere.Close)
+	hits := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		http.Redirect(w, r, elsewhere.URL, http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(ts.Close)
+
+	c := &client{base: ts.URL, token: "fake-token", totp: "123456"}
+	if err := c.do("GET", "/api/v1/items", nil, nil); err == nil {
+		t.Error("a redirect answer was taken for a success")
+	}
+	if hits != 1 || leaked != "" {
+		t.Errorf("hits = %d, headers that reached the redirect target = %q", hits, leaked)
 	}
 }

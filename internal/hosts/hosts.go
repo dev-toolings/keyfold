@@ -8,13 +8,13 @@ import (
 )
 
 // Name returns the host of a Host header or URL authority: lower case,
-// without its port.
+// without its port or the brackets of an IPv6 address.
 func Name(hostport string) string {
 	host := hostport
 	if h, _, err := net.SplitHostPort(hostport); err == nil {
 		host = h
 	}
-	return strings.ToLower(host)
+	return strings.ToLower(strings.Trim(host, "[]"))
 }
 
 // Loopback reports whether name is localhost or a loopback IP address.

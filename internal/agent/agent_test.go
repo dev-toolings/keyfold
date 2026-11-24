@@ -13,6 +13,9 @@ import (
 func noRuntimeDir(t *testing.T) string {
 	t.Helper()
 	tmp := t.TempDir()
+	if err := os.Chmod(tmp, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("XDG_RUNTIME_DIR", "")
 	t.Setenv("TMPDIR", tmp)
 	return tmp
@@ -59,4 +62,23 @@ func TestSocketDirThatIsALinkIsRefused(t *testing.T) {
 	if _, err := Identity(); err == nil || errors.Is(err, ErrNoAgent) {
 		t.Errorf("Identity() = %v, want a refusal of the directory", err)
 	}
+}
+
+func TestSharedTempDirWithoutStickyBitIsRefused(t *testing.T) {
+	tmp := noRuntimeDir(t)
+	if err := os.Chmod(tmp, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if l, err := Listen(); err == nil {
+		l.Close()
+		t.Error("Listen() put the socket where another user can replace its directory")
+	}
+	if err := os.Chmod(tmp, 0o777|os.ModeSticky); err != nil {
+		t.Fatal(err)
+	}
+	l, err := Listen()
+	if err != nil {
+		t.Fatalf("Listen() in a sticky shared dir: %v", err)
+	}
+	l.Close()
 }

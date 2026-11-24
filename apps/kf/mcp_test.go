@@ -36,7 +36,7 @@ func TestMCPToolsNeverReturnValues(t *testing.T) {
 	ts := httptest.NewServer(api.New(st, api.Options{}))
 	defer ts.Close()
 
-	t.Setenv("XDG_RUNTIME_DIR", dir)
+	runtimeDir(t)
 	l, err := agent.Listen()
 	if err != nil {
 		t.Fatal(err)
