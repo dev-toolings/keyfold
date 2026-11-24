@@ -153,10 +153,11 @@ export function AppShell() {
             <p role="status" className="rounded-md border px-3 py-2 text-sm text-muted-foreground">
               {plural(
                 unreadable.length,
-                "élément ne peut pas être déchiffré et reste masqué",
-                "éléments ne peuvent pas être déchiffrés et restent masqués",
+                "élément ne peut pas être lu et reste masqué",
+                "éléments ne peuvent pas être lus et restent masqués",
               )}
-              . Les autres sont utilisables.{" "}
+              . Les autres restent consultables, mais le coffre est en lecture seule et les indicateurs ne comptent que
+              les éléments lisibles.{" "}
               <Link to="/personal/health" className="underline">
                 Voir l'état du système
               </Link>

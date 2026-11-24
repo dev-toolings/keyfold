@@ -121,9 +121,10 @@ An item that cannot be decrypted (a damaged file, or a format this `kf` does
 not know) is skipped: a warning on stderr gives its id, and every other item
 can still be read, changed and deleted. `list` and `migrate` then exit with
 code 3, since they worked on a part of the vault only. Its name is unknown, so
-what needs the whole vault is refused until the item is restored from a backup
-or its file deleted on the server: creating an item (`set` on a new name,
-`import`, the MCP `generate_item`) and `export`.
+what needs the whole vault is refused until the item can be read again or is
+gone: creating an item (`set` on a new name, `import`, the MCP `generate_item`)
+and `export`. The web UI lists the readable items, gives the ids on its system
+health page and is read-only meanwhile.
 
 Example: start a program with its database password, without a `.env` file:
 

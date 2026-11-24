@@ -48,8 +48,8 @@ export type Item = {
 export type Entry = { id: string; etag: string; item: Item; oldFormat: boolean };
 
 /**
- * The items of the vault that could be decrypted, and the ids of the others: a
- * damaged file, or a format this code does not know.
+ * The items of the vault that could be read, and the ids of the others: a
+ * damaged file, one that is not an item, or a format newer than this code.
  */
 export type Listing = { entries: Entry[]; unreadable: string[] };
 

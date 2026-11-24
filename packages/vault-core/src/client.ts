@@ -53,6 +53,10 @@ export async function decryptEntries(raw: StoredItem[], identity: string): Promi
     raw.map(async (r) => {
       try {
         const { item, old } = upgrade((await decryptItem(fromBase64(r.ciphertext), identity)) as Item);
+        // What every list and form reads: without them the file is not an item.
+        if (typeof item?.name !== "string" || typeof item.kind !== "string" || typeof item.value !== "string") {
+          throw new Error("not an item");
+        }
         entries.push({ id: r.id, etag: r.etag, item, oldFormat: old });
       } catch {
         unreadable.push(r.id);

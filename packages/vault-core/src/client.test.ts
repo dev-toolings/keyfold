@@ -2,7 +2,7 @@
 import { expect, test } from "bun:test";
 import { generateX25519Identity, identityToRecipient } from "age-encryption";
 import { decryptEntries } from "./client";
-import { encryptItem, toBase64 } from "./crypto";
+import { encryptBytes, encryptItem, toBase64 } from "./crypto";
 import type { Item } from "./item";
 
 test("an unreadable item is reported by id and the others are listed", async () => {
@@ -36,6 +36,44 @@ test("an unreadable item is reported by id and the others are listed", async () 
   expect(listing.unreadable).toEqual(["0b", "0d"]);
 });
 
-test("a vault without a damaged item reports none", async () => {
-  expect(await decryptEntries([], await generateX25519Identity())).toEqual({ entries: [], unreadable: [] });
+test("a vault whose items are all readable reports none", async () => {
+  const identity = await generateX25519Identity();
+  const recipient = await identityToRecipient(identity);
+  const item: Item = {
+    v: 2,
+    name: "fake-name",
+    kind: "note",
+    value: "fake-value",
+    note: "",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+  const stored = { id: "0a", etag: "etag-0a", ciphertext: toBase64(await encryptItem(item, recipient)) };
+
+  expect(await decryptEntries([stored], identity)).toEqual({
+    entries: [{ id: "0a", etag: "etag-0a", item, oldFormat: false }],
+    unreadable: [],
+  });
+  expect(await decryptEntries([], identity)).toEqual({ entries: [], unreadable: [] });
+});
+
+test("a newer format and a file that is not an item are unreadable, not shown", async () => {
+  const identity = await generateX25519Identity();
+  const recipient = await identityToRecipient(identity);
+  const stored = async (id: string, content: object) => ({
+    id,
+    etag: `etag-${id}`,
+    // encryptItem only writes the current format: these are age files of any JSON.
+    ciphertext: toBase64(await encryptBytes(new TextEncoder().encode(JSON.stringify(content)), recipient)),
+  });
+
+  const listing = await decryptEntries(
+    [
+      await stored("0a", { v: 99, name: "fake-newer", kind: "login", value: "fake-value", note: "", updated_at: "" }),
+      await stored("0b", { v: 2 }),
+      await stored("0c", { v: 2, name: "fake-no-value", kind: "login" }),
+    ],
+    identity,
+  );
+
+  expect(listing).toEqual({ entries: [], unreadable: ["0a", "0b", "0c"] });
 });

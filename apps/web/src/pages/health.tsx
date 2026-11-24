@@ -98,14 +98,13 @@ export function HealthPage() {
                 helper={
                   unreadable.length > 0 ? (
                     <>
-                      {plural(
-                        unreadable.length,
-                        "élément ne peut pas être déchiffré",
-                        "éléments ne peuvent pas être déchiffrés",
-                      )}{" "}
-                      (fichier abîmé ou format inconnu) :{" "}
-                      <code className="font-mono break-all">{unreadable.join(", ")}</code>. Restaurez une sauvegarde, ou
-                      supprimez le fichier du même nom dans <code>items/</code> sur le serveur.
+                      {plural(unreadable.length, "élément ne peut pas être lu", "éléments ne peuvent pas être lus")} :{" "}
+                      <code className="font-mono break-all">
+                        {unreadable.map((id) => `items/${id}.age`).join(", ")}
+                      </code>
+                      . Fichier abîmé, ou format plus récent que cette application. Mettez d'abord Keyfold à jour : un
+                      format plus récent redevient lisible. Sinon, restaurez une sauvegarde. Supprimer le fichier sur le
+                      serveur efface l'élément pour de bon.
                     </>
                   ) : server.items === entries.length ? (
                     "Tous déchiffrés dans ce navigateur"
@@ -117,11 +116,13 @@ export function HealthPage() {
               <Kpi
                 label="Pièces jointes"
                 value={formatNumber(server.blobs)}
-                ok={server.blobs === referenced}
+                ok={unreadable.length === 0 && server.blobs === referenced}
                 helper={
-                  server.blobs === referenced
-                    ? `${formatSize(server.blob_bytes)} au total, ${formatSize(server.max_blob)} au plus par fichier`
-                    : `${formatSize(server.blob_bytes)} au total, dont ${plural(Math.abs(server.blobs - referenced), "fichier", "fichiers")} sans élément correspondant`
+                  unreadable.length > 0
+                    ? `${formatSize(server.blob_bytes)} au total. Les fichiers sans élément ne peuvent pas être comptés tant qu'un élément est illisible`
+                    : server.blobs === referenced
+                      ? `${formatSize(server.blob_bytes)} au total, ${formatSize(server.max_blob)} au plus par fichier`
+                      : `${formatSize(server.blob_bytes)} au total, dont ${plural(Math.abs(server.blobs - referenced), "fichier", "fichiers")} sans élément correspondant`
                 }
               />
               <Kpi
@@ -164,6 +165,13 @@ export function HealthPage() {
 
       <section className="flex flex-col gap-3">
         <h3 className="text-sm font-medium">Indicateurs du coffre</h3>
+        {unreadable.length > 0 && (
+          <p className="text-sm text-muted-foreground">
+            Calculés sur les éléments lisibles seulement :{" "}
+            {plural(unreadable.length, "élément illisible n'est pas compté", "éléments illisibles ne sont pas comptés")}
+            .
+          </p>
+        )}
         <div className="grid gap-3 md:grid-cols-3 lg:grid-cols-5">
           {FILTERS.map((f) => (
             <Link key={f} to={`/personal/vault?filter=${f}`} className="rounded-xl outline-none focus-visible:ring-2">

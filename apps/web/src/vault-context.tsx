@@ -47,7 +47,10 @@ type VaultContext = {
   entries: vault.Entry[];
   /** Items still stored in an older format: `kf migrate -apply` rewrites them. */
   oldFormat: number;
-  /** Ids of the items that could not be decrypted: they are in no list. */
+  /**
+   * Ids of the items that could not be read: they are in no list, and the vault
+   * is read-only while there is one (save, remove and attach fail with an error).
+   */
   unreadable: string[];
   loading: boolean;
   error: string;
@@ -107,9 +110,21 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     run(reload).finally(() => setLoading(false));
   }, []);
 
+  // The name and the attachments of an item that cannot be read are unknown:
+  // a write could take its name, or delete a file it still lists. Reading stays
+  // possible; writing waits for the item to be readable again or gone.
+  const writable = useCallback(() => {
+    if (unreadable.length > 0) {
+      throw new Error(
+        "Coffre en lecture seule tant qu'un élément est illisible. Le détail est dans l'état du système.",
+      );
+    }
+  }, [unreadable]);
+
   const save = useCallback(
     (id: string | null, draft: Draft) =>
       run(async () => {
+        writable();
         // A name is unique: saving under an existing name overwrites that item, like `kf set`.
         const edited = entries.find((e) => e.id === id) ?? null;
         const target = entries.find((e) => e.item.name === draft.name) ?? edited;
@@ -146,23 +161,28 @@ export function VaultProvider({ children }: { children: ReactNode }) {
         await reload();
         return saved;
       }),
-    [entries, run, reload],
+    [entries, run, reload, writable],
   );
 
   const remove = useCallback(
     async (id: string) =>
       (await run(async () => {
+        writable();
         const entry = entries.find((e) => e.id === id);
         if (entry) await vault.deleteItem(entry);
         await reload();
         return true;
       })) ?? false,
-    [entries, run, reload],
+    [entries, run, reload, writable],
   );
 
   const attach = useCallback(
-    (file: File) => run(async () => vault.uploadAttachment(file.name, new Uint8Array(await file.arrayBuffer()))),
-    [run],
+    (file: File) =>
+      run(async () => {
+        writable();
+        return vault.uploadAttachment(file.name, new Uint8Array(await file.arrayBuffer()));
+      }),
+    [run, writable],
   );
 
   const download = useCallback(
