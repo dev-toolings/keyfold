@@ -311,8 +311,10 @@ claude mcp add keyfold -- "$PWD/bin/kf" mcp
   Sessions expire after 15 minutes of inactivity or 12 hours from creation,
   whichever comes first. The server keeps challenges and sessions in memory
   and loses them on restart.
-- Responses that pass the host check carry a Content-Security-Policy that blocks
-  inline scripts, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff` and
+- Responses that pass the host check carry a Content-Security-Policy (files from
+  the server only, the breach check API as the sole external connection, inline
+  styles allowed, inline scripts blocked), `X-Frame-Options: DENY`,
+  `X-Content-Type-Options: nosniff` and
   `Referrer-Policy: no-referrer`. API responses also carry `Cache-Control: no-store`.
   Declared non-loopback hosts receive `Strict-Transport-Security`.
 - The CLI agent receives the identity through a pipe, never argv or env, and
