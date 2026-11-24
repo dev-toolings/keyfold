@@ -1,9 +1,9 @@
 // One item that cannot be decrypted must not hide the others. Fake values only.
 import { expect, test } from "bun:test";
 import { generateX25519Identity, identityToRecipient } from "age-encryption";
-import { decryptEntries } from "./client";
+import { ConflictError, decryptEntries, selectSaveTarget } from "./client";
 import { encryptBytes, encryptItem, toBase64 } from "./crypto";
-import type { Item } from "./item";
+import type { Entry, Item } from "./item";
 
 test("an unreadable item is reported by id and the others are listed", async () => {
   const identity = await generateX25519Identity();
@@ -56,6 +56,34 @@ test("a vault whose items are all readable reports none", async () => {
   expect(await decryptEntries([], identity)).toEqual({ entries: [], unreadable: [] });
 });
 
+test("malformed URLs and notes are unreadable while valid items are listed", async () => {
+  const identity = await generateX25519Identity();
+  const recipient = await identityToRecipient(identity);
+  const stored = async (id: string, content: object) => ({
+    id,
+    etag: `etag-${id}`,
+    ciphertext: toBase64(await encryptBytes(new TextEncoder().encode(JSON.stringify(content)), recipient)),
+  });
+  const item: Item = { v: 2, name: "fake-alpha", kind: "login", value: "fake-value", note: "", updated_at: "" };
+  const other = { ...item, name: "fake-zeta" };
+
+  const listing = await decryptEntries(
+    [
+      await stored("0d", other),
+      await stored("0b", { ...item, urls: [null] }),
+      await stored("0c", { ...item, note: 123 }),
+      await stored("0a", item),
+    ],
+    identity,
+  );
+
+  expect(listing.unreadable).toEqual(["0b", "0c"]);
+  expect(listing.entries.map(({ id, item }) => [id, item.name])).toEqual([
+    ["0a", "fake-alpha"],
+    ["0d", "fake-zeta"],
+  ]);
+});
+
 test("a newer format and a file that is not an item are unreadable, not shown", async () => {
   const identity = await generateX25519Identity();
   const recipient = await identityToRecipient(identity);
@@ -78,4 +106,18 @@ test("a newer format and a file that is not an item are unreadable, not shown", 
   );
 
   expect(listing).toEqual({ entries: [], unreadable: ["0a", "0b", "0c", "0d", "0e"] });
+});
+
+test("save finds the fresh name holder and uses the page entry for an overwrite", () => {
+  const item: Item = { v: 2, name: "fake-edit", kind: "login", value: "fake-value", note: "", updated_at: "" };
+  const edited: Entry = { id: "0a", etag: "page-edit", item, oldFormat: false };
+  const known: Entry = { id: "0b", etag: "page-known", item: { ...item, name: "fake-old" }, oldFormat: false };
+  const renamed: Entry = { ...known, etag: "fresh-known", item: { ...known.item, name: "fake-current" } };
+  const page = [edited, known];
+  const fresh = [{ ...edited, etag: "fresh-edit" }, renamed];
+
+  expect(selectSaveTarget(page, fresh, edited.id, "fake-old")).toBe(edited);
+  expect(selectSaveTarget(page, fresh, null, "fake-old")).toBeNull();
+  expect(selectSaveTarget(page, fresh, edited.id, "fake-current")).toBe(known);
+  expect(() => selectSaveTarget([edited], fresh, edited.id, "fake-current")).toThrow(ConflictError);
 });

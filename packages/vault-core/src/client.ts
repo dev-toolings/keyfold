@@ -16,8 +16,27 @@ import { type BlobRef, type Entry, type Item, isItem, type Listing, upgrade } fr
 /** Thrown when the session is gone (lock, idle expiry, server restart). */
 export class LockedError extends Error {}
 
-/** Thrown when an item changed on the server since it was read (HTTP 412). */
+/** Thrown when an item changed since it was read (HTTP 412), or an unseen item holds the requested name. */
 export class ConflictError extends Error {}
+
+/** Finds the current owner of a name, using the page's entry for any overwrite. */
+export function selectSaveTarget(
+  entries: readonly Entry[],
+  fresh: readonly Entry[],
+  editedId: string | null,
+  name: string,
+): Entry | null {
+  const owner = fresh.find((e) => e.item.name === name);
+  if (!owner) return entries.find((e) => e.id === editedId) ?? null;
+
+  const target = entries.find((e) => e.id === owner.id);
+  if (!target) {
+    throw new ConflictError(
+      "Un élément portant ce nom a été ajouté ou renommé ailleurs entre-temps : rechargez la page et recommencez.",
+    );
+  }
+  return target;
+}
 
 export type Status = { initialized: boolean; totp: boolean };
 /** GET /api/v1/health: what the server sees, ciphertext only. */

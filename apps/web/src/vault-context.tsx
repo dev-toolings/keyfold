@@ -125,15 +125,16 @@ export function VaultProvider({ children }: { children: ReactNode }) {
         "Coffre en lecture seule tant qu'un élément est illisible. Le détail est dans l'état du système.",
       );
     }
+    return listing.entries;
   }, []);
 
   const save = useCallback(
     (id: string | null, draft: Draft) =>
       run(async () => {
-        await writable();
+        const fresh = await writable();
         // A name is unique: saving under an existing name overwrites that item, like `kf set`.
         const edited = entries.find((e) => e.id === id) ?? null;
-        const target = entries.find((e) => e.item.name === draft.name) ?? edited;
+        const target = vault.selectSaveTarget(entries, fresh, id, draft.name);
         const stamp = new Date().toISOString();
         // The fields the form does not edit (username, URLs...) come from the
         // item being edited, even when its new name overwrites another item.
