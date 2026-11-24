@@ -173,6 +173,11 @@ Items are JSON in format v2 (`internal/vault/vault.go`, mirrored in
 `packages/vault-core/src/item.ts`): v1 items are still read, shown upgraded,
 and never written; the web UI shows how many remain until `kf migrate -apply`.
 
+The data directory holds its layout version in `version` (1 today): a server
+refuses a directory written by a newer layout. One server serves a directory at
+a time: a second one on the same directory exits, and a starting server removes
+the temp files a killed one left behind.
+
 ## Second factor (TOTP)
 
 Optional, offered right after the vault is created and in Settings

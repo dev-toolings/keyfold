@@ -35,6 +35,10 @@ func main() {
 		slog.Info("TOTP disabled", "data", *data)
 		return
 	}
+	if err := st.Lock(); err != nil {
+		slog.Error("lock data dir", "err", err, "data", *data)
+		os.Exit(1)
+	}
 	mux := http.NewServeMux()
 	mux.Handle("/api/", api.New(st, *maxBlob))
 	if *web != "" {

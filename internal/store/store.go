@@ -6,10 +6,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -22,6 +24,13 @@ const (
 	totpFile      = "totp.json"
 	itemsDir      = "items"
 	blobsDir      = "blobs"
+	versionFile   = "version"
+	lockFile      = ".lock"
+	tmpPattern    = ".tmp-*"
+
+	// Layout is the version of the data directory layout this code reads and
+	// writes: the file names above. Items carry their own format version.
+	Layout = 1
 )
 
 var idPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
@@ -34,8 +43,9 @@ var ErrConflict = errors.New("item changed since it was read")
 
 // Store is a vault data directory.
 type Store struct {
-	dir string
-	mu  sync.Mutex // makes Put's compare-and-write atomic
+	dir  string
+	mu   sync.Mutex // makes Put's compare-and-write atomic
+	lock *os.File   // held open by Lock for the life of the process
 }
 
 // Entry is one encrypted item. ETag identifies this version of the ciphertext.
@@ -51,7 +61,9 @@ func ETag(ciphertext []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// Open creates the data directory layout if needed.
+// Open creates the data directory layout if needed, and refuses a directory
+// written by a newer layout than this code knows. A directory without a
+// version file predates it: it is layout 1, and gets the file.
 func Open(dir string) (*Store, error) {
 	for _, d := range []string{dir, filepath.Join(dir, itemsDir), filepath.Join(dir, blobsDir)} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
@@ -61,7 +73,59 @@ func Open(dir string) (*Store, error) {
 			return nil, err
 		}
 	}
+	path := filepath.Join(dir, versionFile)
+	data, err := os.ReadFile(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		if err := writeAtomic(path, []byte(strconv.Itoa(Layout)+"\n")); err != nil {
+			return nil, err
+		}
+	case err != nil:
+		return nil, err
+	default:
+		v, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		if err != nil {
+			return nil, fmt.Errorf("%s does not hold a layout version", path)
+		}
+		if v > Layout {
+			return nil, fmt.Errorf("%s has layout version %d, this keyfold-server reads up to %d: use a newer one", dir, v, Layout)
+		}
+	}
 	return &Store{dir: dir}, nil
+}
+
+// ErrInUse is returned by Lock when another process serves the directory.
+var ErrInUse = errors.New("the data directory is in use by another keyfold-server")
+
+// Lock makes this process the only writer of the directory, until it exits:
+// two servers on one directory would each accept a write that overwrites the
+// other's. It then removes the temp files a killed writer left behind, which
+// is only safe once no other writer can be in the middle of one.
+func (s *Store) Lock() error {
+	f, err := os.OpenFile(filepath.Join(s.dir, lockFile), os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return err
+	}
+	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		f.Close()
+		if errors.Is(err, unix.EWOULDBLOCK) {
+			return ErrInUse
+		}
+		return err
+	}
+	s.lock = f
+	for _, d := range []string{s.dir, filepath.Join(s.dir, itemsDir), filepath.Join(s.dir, blobsDir)} {
+		left, err := filepath.Glob(filepath.Join(d, tmpPattern))
+		if err != nil {
+			return err
+		}
+		for _, tmp := range left {
+			if err := os.Remove(tmp); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // Initialized reports whether the identity file exists. It is written last
@@ -208,7 +272,7 @@ func (s *Store) PutBlob(id string, r io.Reader) error {
 	if !ValidID(id) {
 		return errors.New("invalid blob id")
 	}
-	f, err := os.CreateTemp(filepath.Join(s.dir, blobsDir), ".tmp-*")
+	f, err := os.CreateTemp(filepath.Join(s.dir, blobsDir), tmpPattern)
 	if err != nil {
 		return err
 	}
@@ -295,7 +359,7 @@ func (s *Store) itemPath(id string) string {
 // writeAtomic writes data to a 0600 temp file in the target directory, renames
 // it over path, then flushes the directory.
 func writeAtomic(path string, data []byte) error {
-	f, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
+	f, err := os.CreateTemp(filepath.Dir(path), tmpPattern)
 	if err != nil {
 		return err
 	}

@@ -112,3 +112,71 @@ func TestBlobIsStoredWholeOrNotAtAll(t *testing.T) {
 type failingReader struct{}
 
 func (failingReader) Read([]byte) (int, error) { return 0, errors.New("connection lost") }
+
+func TestSecondWriterIsRefused(t *testing.T) {
+	st, dir := open(t)
+	if err := st.Lock(); err != nil {
+		t.Fatal(err)
+	}
+	other, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := other.Lock(); !errors.Is(err, ErrInUse) {
+		t.Errorf("second Lock: %v, want ErrInUse", err)
+	}
+	// What a process exit does: the lock goes with the file.
+	st.lock.Close()
+	if err := other.Lock(); err != nil {
+		t.Errorf("Lock after the first writer is gone: %v", err)
+	}
+}
+
+func TestLockRemovesTempFilesOfAKilledWriter(t *testing.T) {
+	st, dir := open(t)
+	if err := st.Put(idA, []byte("fake-ciphertext"), ""); err != nil {
+		t.Fatal(err)
+	}
+	for _, left := range []string{"items/.tmp-123", "blobs/.tmp-456", ".tmp-789"} {
+		if err := os.WriteFile(filepath.Join(dir, left), []byte("half written"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.Lock(); err != nil {
+		t.Fatal(err)
+	}
+	for _, left := range []string{"items/.tmp-123", "blobs/.tmp-456", ".tmp-789"} {
+		if _, err := os.Stat(filepath.Join(dir, left)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s is still there: %v", left, err)
+		}
+	}
+	if items, err := st.Items(); err != nil || len(items) != 1 {
+		t.Errorf("Items() after the cleanup = %d items, %v; want the stored one", len(items), err)
+	}
+}
+
+func TestLayoutVersion(t *testing.T) {
+	_, dir := open(t)
+	marker := filepath.Join(dir, "version")
+	if got, err := os.ReadFile(marker); err != nil || string(got) != "1\n" {
+		t.Fatalf("a new directory: version file = %q, %v; want %q", got, err, "1\n")
+	}
+
+	// A directory from before the version file is layout 1 and gets marked.
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(dir); err != nil {
+		t.Fatalf("Open of a directory without a version file: %v", err)
+	}
+	if got, _ := os.ReadFile(marker); string(got) != "1\n" {
+		t.Errorf("the version file was not written back: %q", got)
+	}
+
+	if err := os.WriteFile(marker, []byte("2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(dir); err == nil || !strings.Contains(err.Error(), "layout version 2") || !strings.Contains(err.Error(), "up to 1") {
+		t.Errorf("Open of a newer layout: %v, want a refusal naming both versions", err)
+	}
+}
