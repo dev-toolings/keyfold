@@ -317,7 +317,8 @@ claude mcp add keyfold -- "$PWD/bin/kf" mcp
 - Hardening for an untrusted network: five wrong TOTP codes from anyone lock
   every check. Keep it off the internet.
 - Hosting: see [packaging/](packaging/) for the container, reverse proxy and systemd unit.
-- Scheduled backups and a copy off the machine: `-backup` below is run by hand.
+- Off-machine backups: [packaging/](packaging/) provides a timer and local
+  rotation. The operator copies archives off the machine.
 
 ## Backup and restore
 
@@ -346,7 +347,8 @@ encrypted with age and it asks no master password, but `totp.json` is in clear
 ### Scheduled backup
 
 For a host installation, the systemd timer takes a daily backup and keeps the
-14 most recent archives. See the [timer installation instructions](packaging/#scheduled-backup).
+new archive and up to 13 of the newest previous archives. See the
+[timer installation instructions](packaging/#scheduled-backup).
 
 ### Restore drill
 
@@ -355,13 +357,22 @@ archive contains encrypted items and attachments, and `totp.json` is in clear
 when present. Unlock with the same master password and, if TOTP was enabled,
 the same authenticator.
 
-1. In a new shell, set `archive` to the path of your backup and restore to a
-   new directory.
+1. In a new shell, create a private working directory. For a timer backup,
+   choose an archive in `/var/lib/private/keyfold-backups` and copy it as root.
+   Replace the example filename with the archive you chose.
 
    ```sh
-   archive=/path/to/vault.tar
    umask 077
    drill=$(mktemp -d)
+   archive="$drill/vault.tar"
+   sudo install -m 600 -o "$USER" \
+       /var/lib/private/keyfold-backups/keyfold-YYYYMMDDTHHMMSSZ.tar "$archive"
+   ```
+
+   If using a copy made off the machine, set `archive` to its path instead of
+   running `sudo install`. Restore into the working directory.
+
+   ```sh
    keyfold-server -data "$drill/vault" -restore "$archive"
    ```
 

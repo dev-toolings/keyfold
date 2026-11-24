@@ -79,3 +79,15 @@ if [ -e "$stale_partial" ] || [ ! -f "$recent_partial" ]; then
     fail 'partial cleanup ignored file age'
 fi
 printf '%s\n' 'PASS: successful backups remove stale partials and preserve recent partials'
+
+export KEYFOLD_BACKUP_DIR="$test_dir/clock-rollback"
+mkdir "$KEYFOLD_BACKUP_DIR"
+for day in 01 02 03; do
+    printf 'future\n' > "$KEYFOLD_BACKUP_DIR/keyfold-299901${day}T000000Z.tar"
+done
+FAKE_BACKUP_RUN=rollback sh "$script"
+set -- "$KEYFOLD_BACKUP_DIR"/keyfold-*.tar
+[ "$#" -eq 3 ] || fail 'wrong archive count after clock rollback'
+[ "$(cat "$1")" = rollback ] || fail 'rotation removed the new archive after clock rollback'
+[ ! -e "$KEYFOLD_BACKUP_DIR/keyfold-29990101T000000Z.tar" ] || fail 'rotation kept the oldest future archive'
+printf '%s\n' 'PASS: clock rollback keeps the new archive and the two newest older archives'

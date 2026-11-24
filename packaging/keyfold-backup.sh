@@ -51,6 +51,7 @@ digits='[0-9][0-9]'
 archive_name=keyfold-$digits$digits$digits${digits}T$digits$digits${digits}Z.tar
 set --
 for file in "$backup_dir"/keyfold-*.tar; do
+    [ "$file" = "$archive" ] && continue
     # The variable is deliberately matched as a glob.
     # shellcheck disable=SC2254
     case ${file##*/} in
@@ -61,7 +62,8 @@ for file in "$backup_dir"/keyfold-*.tar; do
             ;;
     esac
 done
-while [ "$#" -gt "$keep" ]; do
+# Count the archive from this run toward the retention limit.
+while [ "$#" -ge "$keep" ]; do
     rm -f "$1"
     shift
 done

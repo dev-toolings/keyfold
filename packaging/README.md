@@ -43,10 +43,13 @@ sudo systemctl enable --now keyfold-backup.timer
 ```
 
 The timer runs daily with a randomized delay of up to 30 minutes and catches
-up after downtime. Archives are in `/var/lib/keyfold-backups`, a directory with
-mode `0700`. Each successful run keeps the 14 most recent archives, named
-`keyfold-YYYYMMDDTHHMMSSZ.tar` in UTC. Copy archives off the machine regularly
-to a separate storage location with restricted access.
+up after downtime. Systemd stores archives in `/var/lib/private/keyfold-backups`
+with mode `0700` and links `/var/lib/keyfold-backups` to it. For a restore drill,
+copy the chosen archive as root into a private directory with
+`sudo install -m 600 -o "$USER" <archive> <destination>`, or use an off-machine copy.
+Each successful run keeps the new archive and up to 13 of the newest previous
+archives, named `keyfold-YYYYMMDDTHHMMSSZ.tar` in UTC. Copy archives off the
+machine regularly to a separate storage location with restricted access.
 
 For a manual run, use `keyfold-backup` with an account that can read the vault
 and write into the backup directory. `KEYFOLD_DATA_DIR`, `KEYFOLD_BACKUP_DIR`,
