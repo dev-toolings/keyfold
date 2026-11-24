@@ -308,7 +308,7 @@ func (c *client) whole() error {
 		return nil
 	}
 	// The ids are in the error itself: an MCP caller sees nothing else.
-	return fmt.Errorf("this needs the whole vault, and %d item(s) cannot be read (%s): restore them from a backup, or delete their files in items/ on the server",
+	return fmt.Errorf("this needs the whole vault, and %d item(s) cannot be read (%s): upgrade kf if a newer Keyfold wrote them, else restore them from a backup; deleting their files in items/ on the server removes them for good",
 		len(c.unreadable), strings.Join(c.unreadable, ", "))
 }
 
