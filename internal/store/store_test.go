@@ -9,6 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -375,20 +378,62 @@ func TestRestoreRefusesAnArchiveCutShort(t *testing.T) {
 	}
 }
 
-func TestRestoreLeavesAFileAtTheTargetAlone(t *testing.T) {
+// appearing reads like r, after making something at the restore target on
+// the first read: by then Restore has seen the target missing.
+type appearing struct {
+	r    io.Reader
+	make func()
+}
+
+func (a *appearing) Read(p []byte) (int, error) {
+	if a.make != nil {
+		a.make()
+		a.make = nil
+	}
+	return a.r.Read(p)
+}
+
+func TestRestoreLeavesAloneWhatAppearsAtTheTarget(t *testing.T) {
 	_, dir := vaultWithContent(t)
 	var archive bytes.Buffer
 	if err := Backup(dir, &archive); err != nil {
 		t.Fatal(err)
 	}
+	for name, appear := range map[string]func(target string) string{
+		"a file": func(target string) string {
+			os.WriteFile(target, []byte("kept"), 0o600)
+			return target
+		},
+		"a directory that is not empty": func(target string) string {
+			os.Mkdir(target, 0o700)
+			os.WriteFile(filepath.Join(target, "note"), []byte("kept"), 0o600)
+			return filepath.Join(target, "note")
+		},
+	} {
+		parent := t.TempDir()
+		target := filepath.Join(parent, "data")
+		var kept string
+		r := &appearing{r: bytes.NewReader(archive.Bytes()), make: func() { kept = appear(target) }}
+		if err := Restore(target, r); err == nil {
+			t.Errorf("%s appeared at the target during the restore, and Restore replaced it", name)
+		}
+		if got, _ := os.ReadFile(kept); string(got) != "kept" {
+			t.Errorf("%s: what appeared at the target changed: %q", name, got)
+		}
+		if left, _ := os.ReadDir(parent); len(left) != 1 {
+			t.Errorf("%s: a failed restore left %v behind", name, left)
+		}
+	}
+
+	// A file there from the start is refused before the archive is read.
 	target := filepath.Join(t.TempDir(), "data")
-	if err := os.WriteFile(target, []byte("not a directory"), 0o600); err != nil {
+	if err := os.WriteFile(target, []byte("kept"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := Restore(target, &archive); err == nil {
+	if err := Restore(target, bytes.NewReader(archive.Bytes())); err == nil {
 		t.Error("Restore replaced a file with the vault")
 	}
-	if got, _ := os.ReadFile(target); string(got) != "not a directory" {
+	if got, _ := os.ReadFile(target); string(got) != "kept" {
 		t.Errorf("the file at the target changed: %q", got)
 	}
 }
@@ -433,5 +478,26 @@ func TestBackupRefusesALinkInTheVault(t *testing.T) {
 	var archive bytes.Buffer
 	if err := Backup(dir, &archive); err == nil || bytes.Contains(archive.Bytes(), []byte("not part of the vault")) {
 		t.Errorf("Backup followed a link out of the vault: %v", err)
+	}
+}
+
+func TestBackupDoesNotWaitOnANamedPipe(t *testing.T) {
+	_, dir := vaultWithContent(t)
+	pipe := filepath.Join(dir, "items", idB+".age")
+	if err := os.Remove(pipe); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Mkfifo(pipe, 0o600); err != nil {
+		t.Skipf("no named pipe here: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- Backup(dir, io.Discard) }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("Backup archived a named pipe")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Backup waits for a writer on a named pipe")
 	}
 }

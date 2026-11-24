@@ -79,8 +79,10 @@ func Backup(dir string, w io.Writer) error {
 // addFile copies one file of dir into the archive and reports whether it did.
 // One that does not exist (no TOTP, or an item deleted since it was listed) is
 // skipped. A link is refused: the archive would carry the file it points to.
+// So is anything else that is not a regular file; O_NONBLOCK keeps the open of
+// a named pipe from waiting for a writer before that check.
 func addFile(tw *tar.Writer, dir, name string) (bool, error) {
-	f, err := os.OpenFile(filepath.Join(dir, filepath.FromSlash(name)), os.O_RDONLY|unix.O_NOFOLLOW, 0)
+	f, err := os.OpenFile(filepath.Join(dir, filepath.FromSlash(name)), os.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}

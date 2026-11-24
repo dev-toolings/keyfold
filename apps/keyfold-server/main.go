@@ -3,6 +3,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -72,16 +73,28 @@ func main() {
 	os.Exit(1)
 }
 
-// backupTo archives the data directory into a new 0600 file. It never writes
-// over a file. The archive is written under a ".partial" name and gets its
-// own once whole and flushed: a backup that fails, or is killed, leaves no
-// file to be taken for a good one, and can be run again.
+// backupTo archives the data directory into a new 0600 file. The archive is
+// written under a ".partial" name and renamed once whole and flushed: a backup
+// that fails, or is killed, leaves no file to be taken for a good one, and can
+// be run again. It refuses a name already taken, before the work and again
+// before the rename: a guard against a slip of the operator, not against a
+// file made on purpose in between. A rename, unlike a hard link, works on
+// every file system a backup may go to.
 func backupTo(dir, file string) error {
+	taken := func() error {
+		if _, err := os.Lstat(file); err == nil {
+			return fmt.Errorf("%s exists: a backup never writes over a file", file)
+		}
+		return nil
+	}
+	if err := taken(); err != nil {
+		return err
+	}
 	f, err := os.CreateTemp(filepath.Dir(file), filepath.Base(file)+".partial-*")
 	if err != nil {
 		return err
 	}
-	defer os.Remove(f.Name())
+	defer os.Remove(f.Name()) // no-op after the rename
 	if err := store.Backup(dir, f); err != nil {
 		f.Close()
 		return err
@@ -93,15 +106,21 @@ func backupTo(dir, file string) error {
 	if err := f.Close(); err != nil {
 		return err
 	}
-	if err := os.Link(f.Name(), file); err != nil { // fails when file exists
+	if err := taken(); err != nil {
+		return err
+	}
+	if err := os.Rename(f.Name(), file); err != nil {
 		return err
 	}
 	d, err := os.Open(filepath.Dir(file))
-	if err != nil {
-		return err
+	if err == nil {
+		err = d.Sync()
+		d.Close()
 	}
-	defer d.Close()
-	return d.Sync()
+	if err != nil {
+		return fmt.Errorf("%s is written, but its directory could not be flushed to disk: %w", file, err)
+	}
+	return nil
 }
 
 func restoreFrom(dir, file string) error {
