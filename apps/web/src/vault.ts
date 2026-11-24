@@ -9,7 +9,7 @@ const client = new VaultClient();
 export const isUnlocked = () => client.isUnlocked();
 export const status = () => client.status();
 export const health = () => client.health();
-export const create = (password: string) => client.create(password);
+export const create = (password: string, installToken?: string) => client.create(password, installToken);
 export const hasDownloadedIdentity = () => client.hasDownloadedIdentity();
 export const unlock = (password: string, code?: string) => client.unlock(password, code);
 export const changePassword = (current: string, next: string, code?: string) =>

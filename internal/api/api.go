@@ -49,6 +49,7 @@ const (
 	totpPeriod      = 30 // seconds, the RFC 6238 default
 	totpHeader      = "X-TOTP-Code"
 	ageHeader       = "age-encryption.org/v1\n"
+	installHeader   = "X-Install-Token"
 
 	// contentSecurityPolicy is sent with every response. The web UI loads its
 	// own files only; the one outside call is the breach check (HIBP_RANGE_URL
@@ -80,6 +81,10 @@ type server struct {
 	now     func() time.Time // replaced by tests
 	started time.Time
 
+	initMu       sync.Mutex // guards vault creation and the install token
+	installToken string
+	initStore    func(identity []byte, recipient string) error // replaced by tests
+
 	mu          sync.Mutex
 	challenges  map[string]challenge
 	sessions    map[string]time.Time    // token -> last use
@@ -110,14 +115,22 @@ func New(st *store.Store, o Options) http.Handler {
 	}
 	s.hosts = o.Hosts
 	s.web = o.Web
+	if s.installToken != "" {
+		slog.Info("Use this install token to create the vault from a non-local device", "installToken", s.installToken)
+	}
 	return s.handler()
 }
 
 func newServer(st *store.Store) *server {
-	return &server{
+	s := &server{
 		store: st, maxBlob: DefaultMaxBlob, now: time.Now, started: time.Now(),
+		initStore:  st.Init,
 		challenges: map[string]challenge{}, sessions: map[string]time.Time{}, clients: map[string]*clientState{},
 	}
+	if !st.Initialized() {
+		s.installToken = randomHex(16)
+	}
+	return s
 }
 
 func (s *server) handler() http.Handler {
@@ -269,9 +282,13 @@ func fail(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]string{"error": msg})
 }
 
-// internalError logs err (paths and OS errors only, never content).
-func internalError(w http.ResponseWriter, err error) {
+// logInternalError logs err (paths and OS errors only, never content).
+func logInternalError(w http.ResponseWriter, err error) {
 	slog.Error("internal error", "err", err, "requestId", w.Header().Get("X-Request-Id"))
+}
+
+func internalError(w http.ResponseWriter, err error) {
+	logInternalError(w, err)
 	fail(w, http.StatusInternalServerError, "internal error")
 }
 
@@ -299,6 +316,16 @@ func (s *server) status(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) initVault(w http.ResponseWriter, r *http.Request) {
+	s.initMu.Lock()
+	defer s.initMu.Unlock()
+	if s.store.Initialized() {
+		fail(w, http.StatusConflict, "already initialized")
+		return
+	}
+	if !hosts.Local(r) && (s.installToken == "" || subtle.ConstantTimeCompare([]byte(r.Header.Get(installHeader)), []byte(s.installToken)) != 1) {
+		fail(w, http.StatusForbidden, installHeader+" is required and must match the install token in the server log")
+		return
+	}
 	var req struct {
 		Identity  []byte `json:"identity"`
 		Recipient string `json:"recipient"`
@@ -314,16 +341,15 @@ func (s *server) initVault(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "recipient is not an X25519 age recipient")
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.store.Initialized() {
-		fail(w, http.StatusConflict, "already initialized")
-		return
+	if err := s.initStore(req.Identity, req.Recipient); err != nil {
+		// A directory sync can fail after the identity has been written.
+		if !s.store.Initialized() {
+			internalError(w, err)
+			return
+		}
+		logInternalError(w, err)
 	}
-	if err := s.store.Init(req.Identity, req.Recipient); err != nil {
-		internalError(w, err)
-		return
-	}
+	s.installToken = ""
 	writeJSON(w, http.StatusCreated, map[string]bool{"initialized": true})
 }
 

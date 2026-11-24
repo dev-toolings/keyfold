@@ -19,6 +19,19 @@ export class LockedError extends Error {}
 /** Thrown when an item changed since it was read (HTTP 412), or an unseen item holds the requested name. */
 export class ConflictError extends Error {}
 
+/** Thrown when vault creation requires a valid install token. */
+export class InstallTokenError extends Error {}
+
+/** Checks the hostname of the page. The server decides whether the request is local. */
+export function isLoopbackHost(hostname: string): boolean {
+  return (
+    hostname.toLowerCase() === "localhost" ||
+    hostname === "::1" ||
+    hostname === "[::1]" ||
+    /^127(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/.test(hostname)
+  );
+}
+
 /** Rejects any unseen name holder, then uses the page entry for the edited holder or the first holder. */
 export function selectSaveTarget(
   entries: readonly Entry[],
@@ -121,6 +134,11 @@ export class VaultClient {
     }
     if (!res.ok) {
       const e = (await res.json().catch(() => ({}))) as { error?: string };
+      if (res.status === 403 && path === "/api/v1/init" && e.error?.includes("X-Install-Token")) {
+        throw new InstallTokenError(
+          "Jeton d'installation manquant ou incorrect. Il figure dans le journal du serveur au premier démarrage.",
+        );
+      }
       if (res.status === 403 && e.error?.includes("TOTP")) {
         throw new Error(
           e.error === "TOTP code required" ? "Code de double authentification requis." : "Code incorrect.",
@@ -157,16 +175,18 @@ export class VaultClient {
   }
 
   /** First run: creates the identity, uploads it wrapped, then unlocks. */
-  async create(password: string): Promise<void> {
+  async create(password: string, installToken?: string): Promise<void> {
     if ([...password].length < MIN_MASTER_PASSWORD_LENGTH) {
       throw new Error(`Le mot de passe principal doit faire au moins ${MIN_MASTER_PASSWORD_LENGTH} caractères.`);
     }
     const id = await generateX25519Identity();
     const wrapped = await wrapIdentity(id, password);
-    await this.api("POST", "/api/v1/init", {
-      identity: toBase64(wrapped),
-      recipient: await identityToRecipient(id),
-    });
+    await this.api(
+      "POST",
+      "/api/v1/init",
+      { identity: toBase64(wrapped), recipient: await identityToRecipient(id) },
+      installToken ? { "X-Install-Token": installToken } : undefined,
+    );
     await this.unlock(password);
   }
 

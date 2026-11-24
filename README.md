@@ -98,6 +98,11 @@ the colors. Both formats include the method, path, status, duration and client I
 (`client`), plus the matched route when available. Logs omit the query string,
 raw headers and body.
 
+On first start with an empty data directory, the server logs a single-use install token once as `installToken`.
+Vault creation requires `X-Install-Token` if the connection or host is non-loopback or the request carries a forwarding header.
+Direct loopback creation with a loopback host and no forwarding headers needs no token.
+Creating the vault clears the token, and restarting before creation logs a new one.
+
 ## CLI
 
 ```sh
@@ -108,6 +113,9 @@ The server URL comes from `-server`, then `KEYFOLD_SERVER`, then
 `http://127.0.0.1:8717`. A URL that is not a loopback address must start with
 `https://`: `kf` refuses to send a session token in clear over a network, and
 never follows a redirect.
+
+For remote `kf init`, set `KEYFOLD_INSTALL_TOKEN` to the install token from
+the server log.
 
 | Command | What it does |
 |---|---|
@@ -166,6 +174,8 @@ A new vault needs a master password of at least 16 characters, in the web UI
 and in `kf init`: the encrypted identity can be downloaded by anyone who
 reaches the server, so the master password is the only barrier against an
 offline attack.
+The creation form asks for the install token on a non-loopback host or when
+the server rejects creation because the token is missing or incorrect.
 
 The API is versioned: every route lives under `/api/v1`. `GET /api/v1/items`
 returns an `etag` per item; `PUT /api/v1/items/{id}` with `If-Match: <etag>`
@@ -276,8 +286,8 @@ claude mcp add keyfold -- "$PWD/bin/kf" mcp
 
 - TLS: the server speaks plain HTTP. To reach it from another device, put a TLS
   reverse proxy in front of it and declare its name with `-allowed-hosts`.
-- Hardening for an untrusted network: creating the vault needs no proof, and
-  five wrong TOTP codes from anyone lock every check. Keep it off the internet.
+- Hardening for an untrusted network: five wrong TOTP codes from anyone lock
+  every check. Keep it off the internet.
 - Hosting: no service unit, container or reverse proxy setup.
 - Scheduled backups and a copy off the machine: `-backup` below is run by hand.
 

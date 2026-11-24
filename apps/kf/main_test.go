@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -43,6 +44,49 @@ func TestGetRefusesTerminal(t *testing.T) {
 	}
 	if !bytes.Contains(stderr.Bytes(), []byte("refusing")) {
 		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestInitInstallTokenHeader(t *testing.T) {
+	for _, tc := range []struct{ name, token string }{
+		{"with token", "fake-install-token"},
+		{"missing token", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("KEYFOLD_INSTALL_TOKEN", tc.token)
+			mux := http.NewServeMux()
+			mux.HandleFunc("GET /api/v1/status", func(w http.ResponseWriter, r *http.Request) {
+				if len(r.Header.Values("X-Install-Token")) != 0 {
+					t.Error("the status request sent the install token")
+				}
+				io.WriteString(w, `{"initialized":false}`)
+			})
+			mux.HandleFunc("POST /api/v1/init", func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("X-Install-Token") != tc.token {
+					t.Error("the init request did not send the configured token")
+				}
+				if tc.token == "" {
+					w.WriteHeader(http.StatusForbidden)
+					io.WriteString(w, `{"error":"X-Install-Token is required and must match the install token in the server log"}`)
+					return
+				}
+				w.WriteHeader(http.StatusCreated)
+			})
+			ts := httptest.NewServer(mux)
+			defer ts.Close()
+
+			var stderr bytes.Buffer
+			err := cmdInit(&client{base: ts.URL}, func(string) (string, error) { return "fake-install-master-password", nil }, &stderr)
+			if tc.token == "" {
+				if err == nil || !strings.Contains(err.Error(), "server log") {
+					t.Fatal("a missing token must point the user to the server log")
+				}
+				return
+			}
+			if err != nil || !strings.Contains(stderr.String(), "vault initialized") {
+				t.Fatalf("init did not complete: %v", err)
+			}
+		})
 	}
 }
 

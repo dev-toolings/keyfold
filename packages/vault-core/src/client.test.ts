@@ -1,9 +1,65 @@
 // One item that cannot be decrypted must not hide the others. Fake values only.
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { generateX25519Identity, identityToRecipient } from "age-encryption";
-import { ConflictError, decryptEntries, selectSaveTarget } from "./client";
+import {
+  ConflictError,
+  decryptEntries,
+  InstallTokenError,
+  isLoopbackHost,
+  selectSaveTarget,
+  VaultClient,
+} from "./client";
 import { encryptBytes, encryptItem, toBase64 } from "./crypto";
 import type { Entry, Item } from "./item";
+
+test("the page hostname is loopback only for local names and addresses", () => {
+  for (const hostname of ["localhost", "127.0.0.1", "127.0.0.2", "127.255.255.255", "::1", "[::1]"]) {
+    expect(isLoopbackHost(hostname)).toBe(true);
+  }
+  for (const hostname of ["192.168.1.10", "vault.example", "127.example", "127.0.0.256"]) {
+    expect(isLoopbackHost(hostname)).toBe(false);
+  }
+});
+
+test.each([
+  {
+    name: "install token refusal",
+    response: Response.json(
+      { error: "X-Install-Token is required and must match the install token in the server log" },
+      { status: 403 },
+    ),
+    message: "Jeton d'installation manquant ou incorrect. Il figure dans le journal du serveur au premier démarrage.",
+    isTokenError: true,
+  },
+  {
+    name: "forbidden host",
+    response: Response.json({ error: "forbidden host" }, { status: 403 }),
+    message: "forbidden host",
+    isTokenError: false,
+  },
+  {
+    name: "cross-origin refusal",
+    response: new Response("cross-origin request detected from Sec-Fetch-Site header\n", {
+      status: 403,
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    }),
+    message: "erreur serveur 403",
+    isTokenError: false,
+  },
+])("vault creation handles $name", async ({ response, message, isTokenError }) => {
+  const fetchMock = spyOn(globalThis, "fetch").mockResolvedValue(response);
+  try {
+    const creation = new VaultClient().create("fake-install-master-password");
+    await expect(creation).rejects.toThrow(message);
+    if (isTokenError) {
+      await expect(creation).rejects.toBeInstanceOf(InstallTokenError);
+    } else {
+      await expect(creation).rejects.not.toBeInstanceOf(InstallTokenError);
+    }
+  } finally {
+    fetchMock.mockRestore();
+  }
+});
 
 test("an unreadable item is reported by id and the others are listed", async () => {
   const identity = await generateX25519Identity();
