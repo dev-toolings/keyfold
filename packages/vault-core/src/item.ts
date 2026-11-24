@@ -54,18 +54,44 @@ export type Entry = { id: string; etag: string; item: Item; oldFormat: boolean }
 export type Listing = { entries: Entry[]; unreadable: string[] };
 
 /**
- * Whether a decrypted value has the shape every list and form reads: a name, a
- * value, a known kind, and lists where lists are expected. Anything else is
- * not an item this code can show.
+ * Checks the full shape of an upgraded item. Optional fields may be omitted,
+ * but null is outside the Item type. Extra keys are allowed.
  */
 export function isItem(x: unknown): x is Item {
-  const it = x as Item | null;
-  const list = (v: unknown) => v == null || Array.isArray(v);
+  const isObject = (v: unknown): v is Record<string, unknown> =>
+    typeof v === "object" && v !== null && !Array.isArray(v);
+  const isString = (v: unknown) => typeof v === "string";
+  const isBoolean = (v: unknown) => typeof v === "boolean";
+  const hasStrings = (v: Record<string, unknown>, ...keys: string[]) => keys.every((key) => isString(v[key]));
+  const optional = (v: unknown, check: (v: unknown) => boolean) => v === undefined || check(v);
+  const optionalList = (v: unknown, check: (v: unknown) => boolean) =>
+    optional(v, (list) => Array.isArray(list) && list.every(check));
+
   return (
-    typeof it?.name === "string" &&
-    typeof it.value === "string" &&
-    (KINDS as readonly string[]).includes(it.kind) &&
-    [it.urls, it.fields, it.attachments, it.history, it.passkeys].every(list)
+    isObject(x) &&
+    x.v === ITEM_VERSION &&
+    KINDS.some((kind) => kind === x.kind) &&
+    hasStrings(x, "name", "value", "note", "updated_at") &&
+    [x.username, x.totp, x.folder, x.created_at].every((v) => optional(v, isString)) &&
+    optional(x.favorite, isBoolean) &&
+    optionalList(x.urls, isString) &&
+    optionalList(x.fields, (f) => isObject(f) && hasStrings(f, "name", "value") && optional(f.hidden, isBoolean)) &&
+    optionalList(
+      x.attachments,
+      (a) => isObject(a) && hasStrings(a, "id", "name", "sha256") && typeof a.size === "number",
+    ) &&
+    optionalList(x.history, (r) => isObject(r) && hasStrings(r, "value", "changed_at")) &&
+    optionalList(
+      x.passkeys,
+      (p) =>
+        isObject(p) &&
+        hasStrings(p, "credential_id", "rp_id", "user_handle", "user_name", "private_key", "created_at") &&
+        typeof p.counter === "number",
+    ) &&
+    optional(
+      x.ssh_key,
+      (key) => isObject(key) && hasStrings(key, "private", "public", "fingerprint") && optional(key.agent, isBoolean),
+    )
   );
 }
 
