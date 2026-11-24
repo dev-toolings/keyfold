@@ -3,8 +3,9 @@ Description=Keyfold vault
 After=network.target
 
 [Service]
-# systemd allocates a dedicated user and manages ownership of the persistent state.
+# Share this dynamic user with keyfold-backup.service so it can read vault state.
 DynamicUser=yes
+User=keyfold
 StateDirectory=keyfold
 StateDirectoryMode=0700
 # See the Reverse proxy requirements section in packaging/README.md.
