@@ -10,29 +10,44 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
 // ErrNoAgent means no agent answers on the socket.
 var ErrNoAgent = errors.New("no running agent: run kf unlock")
 
-// SocketPath returns $XDG_RUNTIME_DIR/keyfold/agent.sock.
-func SocketPath() (string, error) {
-	dir := os.Getenv("XDG_RUNTIME_DIR")
-	if dir == "" {
-		return "", errors.New("XDG_RUNTIME_DIR is not set")
+// SocketPath returns $XDG_RUNTIME_DIR/keyfold/agent.sock. Where that variable
+// does not exist (macOS), it returns keyfold-<uid>/agent.sock in the temp dir.
+func SocketPath() string {
+	if dir := os.Getenv("XDG_RUNTIME_DIR"); dir != "" {
+		return filepath.Join(dir, "keyfold", "agent.sock")
 	}
-	return filepath.Join(dir, "keyfold", "agent.sock"), nil
+	return filepath.Join(os.TempDir(), fmt.Sprintf("keyfold-%d", os.Getuid()), "agent.sock")
+}
+
+// ownDir returns an error unless dir is a real directory owned by this user.
+// The temp dir can be shared: another user may have made the path first, as a
+// directory or as a link, to receive the socket.
+func ownDir(dir string) error {
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if st, ok := info.Sys().(*syscall.Stat_t); !info.IsDir() || !ok || int(st.Uid) != os.Getuid() {
+		return fmt.Errorf("%s is not a directory of this user", dir)
+	}
+	return nil
 }
 
 // Listen creates the socket directory (0700) and the socket (0600).
 func Listen() (net.Listener, error) {
-	path, err := SocketPath()
-	if err != nil {
-		return nil, err
-	}
+	path := SocketPath()
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	if err := ownDir(dir); err != nil {
 		return nil, err
 	}
 	if err := os.Chmod(dir, 0o700); err != nil {
@@ -86,8 +101,11 @@ func handle(c net.Conn, identity string) bool {
 }
 
 func request(cmd string) (string, error) {
-	path, err := SocketPath()
-	if err != nil {
+	path := SocketPath()
+	if err := ownDir(filepath.Dir(path)); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", ErrNoAgent
+		}
 		return "", err
 	}
 	c, err := net.Dial("unix", path)

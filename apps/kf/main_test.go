@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"fmt"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -10,7 +9,6 @@ import (
 	"time"
 
 	"filippo.io/age"
-	"golang.org/x/sys/unix"
 
 	"keyfold/internal/agent"
 	"keyfold/internal/api"
@@ -31,29 +29,6 @@ func fileWith(t *testing.T, content string) *os.File {
 	f.Seek(0, 0)
 	t.Cleanup(func() { f.Close() })
 	return f
-}
-
-// openPTY returns the follower side of a new pseudo terminal.
-func openPTY(t *testing.T) *os.File {
-	t.Helper()
-	leader, err := os.OpenFile("/dev/ptmx", os.O_RDWR, 0)
-	if err != nil {
-		t.Skipf("no pty available: %v", err)
-	}
-	t.Cleanup(func() { leader.Close() })
-	if err := unix.IoctlSetPointerInt(int(leader.Fd()), unix.TIOCSPTLCK, 0); err != nil {
-		t.Fatal(err)
-	}
-	n, err := unix.IoctlGetInt(int(leader.Fd()), unix.TIOCGPTN)
-	if err != nil {
-		t.Fatal(err)
-	}
-	follower, err := os.OpenFile(fmt.Sprintf("/dev/pts/%d", n), os.O_RDWR|unix.O_NOCTTY, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { follower.Close() })
-	return follower
 }
 
 func TestGetRefusesTerminal(t *testing.T) {

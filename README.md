@@ -106,7 +106,7 @@ The server URL comes from `-server`, then `KEYFOLD_SERVER`, then
 | Command | What it does |
 |---|---|
 | `kf init` | Asks the master password twice (no echo) and creates the vault. |
-| `kf unlock [-ttl 1h]` | Asks the master password, decrypts the identity and starts a background agent on `$XDG_RUNTIME_DIR/keyfold/agent.sock`. |
+| `kf unlock [-ttl 1h]` | Asks the master password, decrypts the identity and starts a background agent on `$XDG_RUNTIME_DIR/keyfold/agent.sock` (without that variable, as on macOS: `keyfold-<uid>/agent.sock` in the temp directory). |
 | `kf lock` | Stops the agent. |
 | `kf get <name>` | Prints the value and a newline to stdout. Refused (exit 1) when stdout is a terminal. |
 | `kf set <name> [-kind K] [-note N]` | Reads the value from stdin (no echo on a terminal; one trailing newline is dropped). Kinds: `login` (default), `token`, `note`, `identity`, `ssh-key`, `ssh-passphrase`. An existing item gets the new value and keeps every field no flag sets; the old value goes to its history (20 values kept). |
