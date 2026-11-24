@@ -22,6 +22,7 @@ import (
 	"keyfold/internal/logger"
 	"keyfold/internal/store"
 	"keyfold/internal/vault"
+	"keyfold/internal/version"
 )
 
 func init() { vault.ScryptWorkFactor = 10 }
@@ -1011,6 +1012,9 @@ func TestHealth(t *testing.T) {
 	var h map[string]any
 	if code := call(t, ts, "GET", "/api/v1/health", token, nil, &h); code != http.StatusOK {
 		t.Fatalf("health: %d", code)
+	}
+	if h["version"] != version.Version {
+		t.Errorf("health version = %v, want %q", h["version"], version.Version)
 	}
 	if h["items"] != 1.0 || h["blobs"] != 1.0 || h["blob_bytes"] != float64(len(blob)) || h["sessions"] != 1.0 || h["free_bytes"].(float64) <= 0 {
 		t.Fatalf("health = %v", h)

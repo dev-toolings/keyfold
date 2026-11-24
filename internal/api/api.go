@@ -28,6 +28,7 @@ import (
 	"keyfold/internal/logger"
 	"keyfold/internal/store"
 	"keyfold/internal/vault"
+	"keyfold/internal/version"
 )
 
 // DefaultMaxBlob is the attachment size limit when none is given.
@@ -801,6 +802,7 @@ func (s *server) health(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"api":            "v1",
+		"version":        version.Version,
 		"items":          u.Items,
 		"blobs":          u.Blobs,
 		"blob_bytes":     u.BlobBytes,

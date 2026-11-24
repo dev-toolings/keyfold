@@ -17,6 +17,7 @@ import (
 	"keyfold/internal/api"
 	"keyfold/internal/store"
 	"keyfold/internal/vault"
+	"keyfold/internal/version"
 )
 
 func init() { vault.ScryptWorkFactor = 10 }
@@ -32,6 +33,22 @@ func fileWith(t *testing.T, content string) *os.File {
 	f.Seek(0, 0)
 	t.Cleanup(func() { f.Close() })
 	return f
+}
+
+func TestVersion(t *testing.T) {
+	runtimeDir(t)
+	var stderr bytes.Buffer
+	out := fileWith(t, "")
+	if code := run([]string{"-server", "http://127.0.0.1:1", "version"}, fileWith(t, ""), out, &stderr); code != 0 || stderr.Len() != 0 {
+		t.Fatalf("kf version: exit %d, stderr %q", code, stderr.String())
+	}
+	got, err := os.ReadFile(out.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "kf " + version.Display() + "\n"; string(got) != want {
+		t.Errorf("stdout = %q, want %q", got, want)
+	}
 }
 
 func TestGetRefusesTerminal(t *testing.T) {

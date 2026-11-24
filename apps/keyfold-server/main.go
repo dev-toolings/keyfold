@@ -19,6 +19,7 @@ import (
 	"keyfold/internal/api"
 	"keyfold/internal/logger"
 	"keyfold/internal/store"
+	"keyfold/internal/version"
 )
 
 // shutdownGrace is how long requests in flight get to finish after a stop signal.
@@ -34,7 +35,12 @@ func main() {
 	disableTOTP := flag.Bool("disable-totp", false, "turn the second factor off and exit (recovery, needs disk access)")
 	backup := flag.String("backup", "", "write the whole data directory to this new archive `file` and exit (a server may be running)")
 	restore := flag.String("restore", "", "recreate the data directory from a -backup archive `file` and exit (the directory must be missing or empty)")
+	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println("keyfold-server", version.Display())
+		return
+	}
 	slog.SetDefault(logger.New(os.Getenv("KEYFOLD_ENV"), os.Stdout))
 
 	if *backup != "" {
