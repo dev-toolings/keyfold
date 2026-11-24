@@ -117,7 +117,7 @@ func (s *Store) SetTOTP(t TOTP) error {
 
 // ClearTOTP removes the second factor. Removing a missing one is not an error.
 func (s *Store) ClearTOTP() error {
-	err := os.Remove(filepath.Join(s.dir, totpFile))
+	err := remove(filepath.Join(s.dir, totpFile))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -199,7 +199,7 @@ func (s *Store) Delete(id, ifMatch string) error {
 			return ErrConflict
 		}
 	}
-	return os.Remove(s.itemPath(id))
+	return remove(s.itemPath(id))
 }
 
 // PutBlob streams an encrypted attachment to disk. id must be valid. Nothing
@@ -224,7 +224,10 @@ func (s *Store) PutBlob(id string, r io.Reader) error {
 	if err := f.Close(); err != nil {
 		return err
 	}
-	return os.Rename(f.Name(), s.blobPath(id))
+	if err := os.Rename(f.Name(), s.blobPath(id)); err != nil {
+		return err
+	}
+	return syncDir(filepath.Join(s.dir, blobsDir))
 }
 
 // Blob opens an encrypted attachment. A missing one returns an error matching
@@ -242,7 +245,7 @@ func (s *Store) DeleteBlob(id string) error {
 	if !ValidID(id) {
 		return errors.New("invalid blob id")
 	}
-	return os.Remove(s.blobPath(id))
+	return remove(s.blobPath(id))
 }
 
 // Usage counts the stored items and attachments, and the free space left on
@@ -289,8 +292,8 @@ func (s *Store) itemPath(id string) string {
 	return filepath.Join(s.dir, itemsDir, id+".age")
 }
 
-// writeAtomic writes data to a 0600 temp file in the target directory, then
-// renames it over path.
+// writeAtomic writes data to a 0600 temp file in the target directory, renames
+// it over path, then flushes the directory.
 func writeAtomic(path string, data []byte) error {
 	f, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
 	if err != nil {
@@ -313,5 +316,28 @@ func writeAtomic(path string, data []byte) error {
 	if err := f.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	return syncDir(filepath.Dir(path))
+}
+
+// syncDir flushes a directory: without it, a file renamed or removed there can
+// be back in its former state after a power loss, although the caller was told
+// the change was done.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
+}
+
+// remove deletes a file and flushes its directory.
+func remove(path string) error {
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+	return syncDir(filepath.Dir(path))
 }
