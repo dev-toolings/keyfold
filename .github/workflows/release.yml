@@ -34,6 +34,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Validate changelog section
+        shell: bash
+        run: bash .github/release-notes.sh "$RELEASE_TAG" > /dev/null
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
@@ -65,23 +68,7 @@ jobs:
           persist-credentials: false
       - name: Extract release notes
         shell: bash
-        run: |
-          if ! awk -v version="${RELEASE_TAG#v}" '
-            BEGIN { heading = "## [" version "] - " }
-            /^##[[:space:]]/ {
-              if (found) exit
-              if (index($0, heading) == 1) found = 1
-              next
-            }
-            found {
-              print
-              if ($0 ~ /[^[:space:]]/) has_notes = 1
-            }
-            END { if (!has_notes) exit 1 }
-          ' CHANGELOG.md > "$RUNNER_TEMP/keyfold-release-notes.md"; then
-            printf 'CHANGELOG.md has no release notes for %s\n' "$RELEASE_TAG" >&2
-            exit 1
-          fi
+        run: bash .github/release-notes.sh "$RELEASE_TAG" > "$RUNNER_TEMP/keyfold-release-notes.md"
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
@@ -134,7 +121,7 @@ jobs:
             "${flags[@]}"
 
   image-build:
-    needs: check
+    needs: [check, release]
     strategy:
       matrix:
         include:
