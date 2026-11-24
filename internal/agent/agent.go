@@ -29,12 +29,16 @@ func SocketPath() string {
 // ownDir returns an error unless dir is a real directory owned by this user,
 // in a parent where nobody else can replace it. The temp dir can be shared:
 // another user may have made the path first, as a directory or as a link, to
-// receive the socket; and where others can write without the sticky bit, they
-// can swap the directory after this check.
+// receive the socket. And whoever owns the parent, or can write to it without
+// the sticky bit, can swap the directory after this check: the parent must
+// belong to this user or to root.
 func ownDir(dir string) error {
 	parent, err := os.Stat(filepath.Dir(dir))
 	if err != nil {
 		return err
+	}
+	if st, ok := parent.Sys().(*syscall.Stat_t); !ok || (st.Uid != 0 && int(st.Uid) != os.Getuid()) {
+		return fmt.Errorf("%s belongs to another user", filepath.Dir(dir))
 	}
 	if m := parent.Mode(); m.Perm()&0o022 != 0 && m&os.ModeSticky == 0 {
 		return fmt.Errorf("%s is writable by other users without the sticky bit", filepath.Dir(dir))
