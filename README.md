@@ -82,6 +82,15 @@ of the server answers to. Any other `Host` gets 403, for the API and the web UI
 alike. The reverse proxy must append the connecting client's IP address to
 `X-Forwarded-For`. Keyfold uses the last address in that header only when
 the proxy connects over loopback.
+
+`GET /api/v1/alive` gets HTTP 403 from the host guard if `Host` is neither
+loopback nor declared. With an allowed `Host`, the probe returns HTTP 404 if
+the host or client is not loopback or if the request has a forwarding header.
+A direct loopback request to a loopback host with no forwarding headers gets
+HTTP 200 with `{"alive":true}`, without a session or a rate limit. The probe
+reports only that the server responds and is suitable for a container health
+check or a local watchdog.
+
 `make site-build` builds the public product site (`apps/site`: landing pages,
 `llms.txt` and `llms-full.txt`, no vault) as static files into `apps/site/out`;
 `make site-dev` starts its dev server. That is what keyfold.pulseview.app

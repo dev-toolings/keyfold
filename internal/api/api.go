@@ -34,6 +34,7 @@ import (
 const DefaultMaxBlob = 100 << 20
 
 const (
+	alivePath    = "/api/v1/alive"
 	maxBody      = 1 << 20
 	challengeTTL = 60 * time.Second
 	// maxChallenges bounds the memory held by unanswered challenges, which
@@ -122,6 +123,7 @@ func newServer(st *store.Store) *server {
 
 func (s *server) handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET "+alivePath, alive)
 	mux.HandleFunc("GET /api/v1/status", s.limitCalls(s.status))
 	mux.HandleFunc("POST /api/v1/init", s.limitCalls(s.initVault))
 	mux.HandleFunc("GET /api/v1/identity", s.limitCalls(s.identity))
@@ -743,6 +745,15 @@ func (s *server) deleteBlob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func alive(w http.ResponseWriter, r *http.Request) {
+	if !hosts.Local(r) {
+		fail(w, http.StatusNotFound, "not found")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	io.WriteString(w, `{"alive":true}`)
 }
 
 // health reports what the server knows about the vault: counts and sizes of
