@@ -19,23 +19,25 @@ export class LockedError extends Error {}
 /** Thrown when an item changed since it was read (HTTP 412), or an unseen item holds the requested name. */
 export class ConflictError extends Error {}
 
-/** Finds the current owner of a name, using the page's entry for any overwrite. */
+/** Rejects any unseen name holder, then uses the page entry for the edited holder or the first holder. */
 export function selectSaveTarget(
   entries: readonly Entry[],
   fresh: readonly Entry[],
   editedId: string | null,
   name: string,
 ): Entry | null {
-  const owner = fresh.find((e) => e.item.name === name);
-  if (!owner) return entries.find((e) => e.id === editedId) ?? null;
-
-  const target = entries.find((e) => e.id === owner.id);
-  if (!target) {
-    throw new ConflictError(
-      "Un élément portant ce nom a été ajouté ou renommé ailleurs entre-temps : rechargez la page et recommencez.",
-    );
+  let target: Entry | undefined;
+  for (const holder of fresh) {
+    if (holder.item.name !== name) continue;
+    const entry = entries.find((e) => e.id === holder.id);
+    if (!entry) {
+      throw new ConflictError(
+        "Un élément portant ce nom a été ajouté ou renommé ailleurs entre-temps : rechargez la page et recommencez.",
+      );
+    }
+    if (!target || entry.id === editedId) target = entry;
   }
-  return target;
+  return target ?? entries.find((e) => e.id === editedId) ?? null;
 }
 
 export type Status = { initialized: boolean; totp: boolean };

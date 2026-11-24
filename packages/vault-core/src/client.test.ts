@@ -120,4 +120,9 @@ test("save finds the fresh name holder and uses the page entry for an overwrite"
   expect(selectSaveTarget(page, fresh, null, "fake-old")).toBeNull();
   expect(selectSaveTarget(page, fresh, edited.id, "fake-current")).toBe(known);
   expect(() => selectSaveTarget([edited], fresh, edited.id, "fake-current")).toThrow(ConflictError);
+
+  const duplicate: Entry = { ...edited, etag: "fresh-edit", item: { ...item, name: "fake-current" } };
+  expect(() => selectSaveTarget([edited], [duplicate, renamed], edited.id, "fake-current")).toThrow(ConflictError);
+  expect(() => selectSaveTarget([edited], [renamed, duplicate], edited.id, "fake-current")).toThrow(ConflictError);
+  expect(selectSaveTarget(page, [renamed, duplicate], edited.id, "fake-current")).toBe(edited);
 });
