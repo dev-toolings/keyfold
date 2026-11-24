@@ -79,7 +79,9 @@ go run ./apps/keyfold-server -listen 127.0.0.1:8717 -data ./data -web ./apps/web
 `-allowed-hosts` (or `KEYFOLD_ALLOWED_HOSTS`) lists the host names accepted
 besides loopback ones, comma separated: the names a TLS reverse proxy in front
 of the server answers to. Any other `Host` gets 403, for the API and the web UI
-alike.
+alike. The reverse proxy must append the connecting client's IP address to
+`X-Forwarded-For`. Keyfold uses the last address in that header only when
+the proxy connects over loopback.
 `make site-build` builds the public product site (`apps/site`: landing pages,
 `llms.txt` and `llms-full.txt`, no vault) as static files into `apps/site/out`;
 `make site-dev` starts its dev server. That is what keyfold.pulseview.app
@@ -91,9 +93,10 @@ lists every target.
 
 Logs go to stdout, one line per request with a `requestId` that is also sent
 as the `X-Request-Id` header. They are JSON by default. `KEYFOLD_ENV=development`
-(set by `make dev`) prints colored one-line logs instead; `NO_COLOR=1` removes
-the colors. Only the method, path, status and duration are logged: never a
-header, a body or a query string.
+(set by `make dev`) prints colored one-line logs, with `NO_COLOR=1` to remove
+the colors. Both formats include the method, path, status, duration and client IP
+(`client`), plus the matched route when available. Logs omit the query string,
+raw headers and body.
 
 ## CLI
 
@@ -204,7 +207,12 @@ changed.
   nobody who merely reaches the server can download it for an offline attack.
   Unlocking in the browser and `kf unlock` ask for the code. `kf get`, `set`
   and `kf mcp` do not: they use the agent, already unlocked.
-- A code works once. Five wrong codes in a row lock every check for 15 minutes.
+- A code works once across all clients. Five wrong codes in a row lock TOTP
+  checks for that client's IP address for 15 minutes.
+- Each client IP has a shared limit of 60 calls per minute across status, init,
+  identity retrieval, challenge and session. Direct requests to a loopback host
+  from a loopback connection without forwarding headers are exempt from this
+  call limit. The TOTP lockout still applies.
 - The secret is stored in clear in `data/totp.json` (0600): the server must read
   it alone. TOTP does not protect a stolen disk.
 - Phone lost: on the server machine, `keyfold-server -disable-totp -data ./data`.

@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
@@ -243,22 +244,129 @@ func TestTOTPGatesIdentity(t *testing.T) {
 }
 
 func TestTOTPLockout(t *testing.T) {
-	ts, s, id, _ := setupServer(t)
+	const clientB = "192.0.2.2"
+	for _, c := range []struct{ name, clientA string }{
+		{"proxied", "192.0.2.1"},
+		{"direct loopback", ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ts, s, id, _ := setupServer(t)
+			clock := time.Unix(1_800_000_000, 0)
+			s.now = func() time.Time { return clock }
+			secret := enableTOTP(t, ts, login(t, ts, id), clock)
+			clock = clock.Add(totpPeriod * time.Second)
+			handler := s.handler()
+			get := func(address, code string) int {
+				r := clientRequest(http.MethodGet, "/api/v1/identity", address)
+				r.Header.Set(totpHeader, code)
+				w := httptest.NewRecorder()
+				handler.ServeHTTP(w, r)
+				return w.Code
+			}
+			for i := range totpMaxFailures {
+				if code := get(c.clientA, "wrong"); code != http.StatusForbidden {
+					t.Fatalf("client A wrong code %d: got %d, want 403", i+1, code)
+				}
+			}
+			good, _ := totp.GenerateCode(secret, clock)
+			if code := get(clientB, good); code != http.StatusOK {
+				t.Fatalf("client B: got %d, want 200", code)
+			}
+			if code := get(c.clientA, good); code != http.StatusTooManyRequests {
+				t.Fatalf("client A: got %d, want 429", code)
+			}
+			if code := get("192.0.2.3", good); code != http.StatusForbidden {
+				t.Fatalf("client C replay: got %d, want 403", code)
+			}
+			clock = clock.Add(totpLockout)
+			good, _ = totp.GenerateCode(secret, clock)
+			if code := get(c.clientA, good); code != http.StatusOK {
+				t.Fatalf("client A after the lockout: got %d, want 200", code)
+			}
+		})
+	}
+}
+
+func clientRequest(method, path, address string) *http.Request {
+	r := httptest.NewRequest(method, "http://localhost"+path, nil)
+	r.RemoteAddr = "127.0.0.1:1234"
+	if address != "" {
+		r.Header.Set("X-Forwarded-For", address)
+	}
+	return r
+}
+
+func TestClientCallLimit(t *testing.T) {
+	_, s, _, _ := setupServer(t)
 	clock := time.Unix(1_800_000_000, 0)
 	s.now = func() time.Time { return clock }
-	secret := enableTOTP(t, ts, login(t, ts, id), clock)
-	clock = clock.Add(30 * time.Second)
-	for range totpMaxFailures {
-		getIdentity(t, ts, "", "000000", nil)
+	handler := s.handler()
+	call := func(method, path, address string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, clientRequest(method, "/api/v1/"+path, address))
+		return w
 	}
-	good, _ := totp.GenerateCode(secret, clock)
-	if code := getIdentity(t, ts, "", good, nil); code != http.StatusTooManyRequests {
-		t.Fatalf("after %d wrong codes: got %d, want 429", totpMaxFailures, code)
+	const clientA, clientB = "192.0.2.1", "192.0.2.2"
+	for i := range maxCallsPerMinute {
+		if w := call("POST", "challenge", clientA); w.Code != http.StatusOK {
+			t.Fatalf("client A challenge %d: got %d, want 200", i+1, w.Code)
+		}
 	}
-	clock = clock.Add(totpLockout + 30*time.Second)
-	good, _ = totp.GenerateCode(secret, clock)
-	if code := getIdentity(t, ts, "", good, nil); code != http.StatusOK {
-		t.Fatalf("after the lockout: got %d, want 200", code)
+	for _, route := range []struct{ method, path string }{
+		{"POST", "challenge"}, {"GET", "identity"}, {"GET", "status"}, {"POST", "init"}, {"POST", "session"},
+	} {
+		w := call(route.method, route.path, clientA)
+		if w.Code != http.StatusTooManyRequests || w.Header().Get("Retry-After") != "60" {
+			t.Errorf("client A %s: got %d with Retry-After %q, want 429 with 60", route.path, w.Code, w.Header().Get("Retry-After"))
+		}
+		var body struct{ Error string }
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || body.Error == "" {
+			t.Errorf("client A %s: want a JSON error, got %s", route.path, w.Body)
+		}
+	}
+	if w := call("POST", "challenge", clientB); w.Code != http.StatusOK {
+		t.Errorf("client B challenge: got %d, want 200", w.Code)
+	}
+	if w := call("GET", "identity", clientB); w.Code != http.StatusOK {
+		t.Errorf("client B identity: got %d, want 200", w.Code)
+	}
+	clock = clock.Add(time.Minute - time.Millisecond)
+	if w := call("GET", "identity", clientA); w.Code != http.StatusTooManyRequests || w.Header().Get("Retry-After") != "1" {
+		t.Errorf("before reset: got %d with Retry-After %q, want 429 with 1", w.Code, w.Header().Get("Retry-After"))
+	}
+	clock = clock.Add(time.Millisecond)
+	if w := call("GET", "identity", clientA); w.Code != http.StatusOK {
+		t.Errorf("after reset: got %d, want 200", w.Code)
+	}
+}
+
+func TestClientTableBound(t *testing.T) {
+	_, s, _, _ := setupServer(t)
+	clock := time.Unix(1_800_000_000, 0)
+	s.now = func() time.Time { return clock }
+	handler := s.handler()
+	call := func(address string) {
+		t.Helper()
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, clientRequest("GET", "/api/v1/status", address))
+		if w.Code != http.StatusOK {
+			t.Fatalf("status: got %d, want 200", w.Code)
+		}
+	}
+	for i := 1; i <= maxClients+1; i++ {
+		call(fmt.Sprintf("2001:db8::%x", i))
+		clock = clock.Add(time.Millisecond)
+		if len(s.clients) > maxClients {
+			t.Fatalf("client table has %d entries, max %d", len(s.clients), maxClients)
+		}
+	}
+	if len(s.clients) != maxClients || s.clients["2001:db8::1"] != nil {
+		t.Fatal("a full client table should evict its oldest entry")
+	}
+	clock = clock.Add(time.Minute)
+	call("192.0.2.1")
+	if len(s.clients) != 1 || s.clients["192.0.2.1"] == nil {
+		t.Fatalf("want only the new entry after expiration, got %d entries", len(s.clients))
 	}
 }
 
