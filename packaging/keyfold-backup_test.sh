@@ -13,6 +13,7 @@ export KEYFOLD_BACKUP_DIR="$test_dir/backups"
 export KEYFOLD_BACKUP_KEEP=3
 export PATH="$test_dir/bin:$PATH"
 mkdir "$test_dir/bin" "$KEYFOLD_DATA_DIR" "$KEYFOLD_BACKUP_DIR"
+lock=$KEYFOLD_BACKUP_DIR/.keyfold.lock
 
 cat > "$test_dir/bin/keyfold-server" <<'EOF'
 #!/bin/sh
@@ -41,6 +42,7 @@ touch -t 200001010000 "$stale_partial"
 run=1
 while [ "$run" -le 5 ]; do
     FAKE_BACKUP_RUN=$run sh "$script"
+    [ ! -e "$lock" ] || fail 'a successful run left the lock behind'
     set -- "$KEYFOLD_BACKUP_DIR"/keyfold-[0-9]*.tar
     expected=1
     if [ "$run" -gt "$KEYFOLD_BACKUP_KEEP" ]; then
@@ -62,6 +64,7 @@ touch -t 200001010000 "$stale_partial"
 if FAKE_BACKUP_FAIL=1 KEYFOLD_BACKUP_KEEP=1 sh "$script"; then
     fail 'a failing backup reported success'
 fi
+[ ! -e "$lock" ] || fail 'a failed run left the lock behind'
 for file do
     [ -s "$file" ] || fail 'a failed run removed an archive'
 done
@@ -73,8 +76,30 @@ if [ "$(cat "$unrelated")" != keep ] || [ "$(cat "$similar")" != keep ]; then
 fi
 printf '%s\n' 'PASS: unrelated files are preserved'
 
+mkdir "$lock" "$lock/active"
+if output=$(FAKE_BACKUP_RUN=blocked KEYFOLD_BACKUP_KEEP=1 sh "$script" 2>&1); then
+    fail 'a run with the lock held reported success'
+fi
+case $output in
+    *'backup lock'*) ;;
+    *) fail 'a run with the lock held gave no lock error' ;;
+esac
+for file do
+    [ -s "$file" ] || fail 'a run with the lock held removed an archive'
+done
+set -- "$KEYFOLD_BACKUP_DIR"/keyfold-[0-9]*.tar
+[ "$#" -eq "$KEYFOLD_BACKUP_KEEP" ] || fail 'a run with the lock held created an archive'
+[ -d "$lock/active" ] || fail 'a run with the lock held removed the lock'
+printf '%s\n' 'PASS: a held lock blocks the backup and leaves all archives in place'
+
 [ -f "$recent_partial" ] || fail 'a recent partial was removed'
+touch -t 200001010000 "$lock"
 FAKE_BACKUP_RUN=6 sh "$script"
+[ ! -e "$lock" ] || fail 'a successful takeover left the lock behind'
+set -- "$KEYFOLD_BACKUP_DIR"/keyfold-[0-9]*.tar
+[ "$#" -eq "$KEYFOLD_BACKUP_KEEP" ] || fail 'wrong archive count after a stale lock takeover'
+[ "$(cat "$3")" = 6 ] || fail 'a stale lock takeover did not create an archive'
+printf '%s\n' 'PASS: a stale lock is taken over and released after a successful backup'
 if [ -e "$stale_partial" ] || [ ! -f "$recent_partial" ]; then
     fail 'partial cleanup ignored file age'
 fi

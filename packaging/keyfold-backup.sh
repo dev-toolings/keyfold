@@ -21,24 +21,31 @@ case $backup_dir in
 esac
 mkdir -p "$backup_dir"
 
-# Reserve the UTC second so simultaneous runs cannot pick the same name.
+lock=$backup_dir/.keyfold.lock
+# An active marker keeps a delayed stale-lock cleanup from removing a new lock.
+if ! {
+    mkdir "$lock" || {
+        # A lock older than one day may be left by a killed run.
+        # Check its age and remove its marker from inside the same directory.
+        ( [ ! -L "$lock" ] && cd "$lock" &&
+            [ -n "$(find . -prune -mtime +0 -print)" ] &&
+            { [ ! -d active ] || rmdir active; } ) &&
+            rmdir "$lock" && mkdir "$lock"
+    }
+} 2>/dev/null || ! mkdir "$lock/active" 2>/dev/null; then
+    printf 'Cannot acquire backup lock %s (another backup may be running)\n' "$lock" >&2
+    exit 1
+fi
+trap 'rmdir "$lock/active" "$lock"' 0
+trap 'exit 1' HUP INT TERM
+
+# A completed run in the same UTC second may already have used this name.
 while :; do
     stamp=$(date -u '+%Y%m%dT%H%M%SZ')
     archive=$backup_dir/keyfold-$stamp.tar
-    reservation=$backup_dir/.keyfold-$stamp.lock
-    if mkdir "$reservation" 2>/dev/null; then
-        if [ ! -e "$archive" ] && [ ! -L "$archive" ]; then
-            break
-        fi
-        rmdir "$reservation"
-    elif [ ! -d "$reservation" ] && [ ! -e "$archive" ]; then
-        printf 'Cannot reserve backup name in %s\n' "$backup_dir" >&2
-        exit 1
-    fi
+    [ ! -e "$archive" ] && [ ! -L "$archive" ] && break
     sleep 1
 done
-trap 'rmdir "$reservation"' 0
-trap 'exit 1' HUP INT TERM
 
 keyfold-server -data "$data_dir" -backup "$archive"
 if [ ! -f "$archive" ] || [ ! -s "$archive" ]; then
