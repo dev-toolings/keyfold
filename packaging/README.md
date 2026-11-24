@@ -47,7 +47,13 @@ proxy_set_header Host $host;
 proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 ```
 
-Once Keyfold is running, send `GET /api/v1/alive` through the proxy from another
-device. It must return HTTP 404. Keyfold returns HTTP 200 only for a local
-request, so a 200 means the proxy is hiding the remote client and must be fixed
-before you create the vault.
+Once Keyfold is running, check both from another device through the proxy before
+you create the vault.
+
+1. Send `GET /api/v1/alive`. HTTP 404 confirms that Keyfold treats the request
+   as remote.
+2. Send `GET /api/v1/status` because the alive probe is logged at debug level.
+   Read the server access log with `docker compose -f packaging/compose.yml logs vault`
+   for Compose or `journalctl -u keyfold` for systemd. The request's `client`
+   field must show the device's IP address, confirming Keyfold uses the
+   forwarded address. `127.0.0.1` or `::1` indicates the proxy's loopback address.
