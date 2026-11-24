@@ -47,6 +47,12 @@ export type Item = {
 /** A decrypted item. oldFormat: stored as v1, shown upgraded until `kf migrate -apply` rewrites it. */
 export type Entry = { id: string; etag: string; item: Item; oldFormat: boolean };
 
+/**
+ * The items of the vault that could be decrypted, and the ids of the others: a
+ * damaged file, or a format this code does not know.
+ */
+export type Listing = { entries: Entry[]; unreadable: string[] };
+
 /** Creation date of an item, falling back to its last update when created_at is missing or empty. */
 export function createdAt(item: Item): string {
   return item.created_at || item.updated_at;

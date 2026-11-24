@@ -11,7 +11,7 @@ import {
   unwrapIdentity,
   wrapIdentity,
 } from "./crypto";
-import { type BlobRef, type Entry, type Item, upgrade } from "./item";
+import { type BlobRef, type Entry, type Item, type Listing, upgrade } from "./item";
 
 /** Thrown when the session is gone (lock, idle expiry, server restart). */
 export class LockedError extends Error {}
@@ -38,6 +38,30 @@ export type TotpSetup = { secret: string; uri: string; qr: string };
 export const MIN_MASTER_PASSWORD_LENGTH = 16;
 
 type Wrapped = { identity: string; recipient: string };
+
+/** One item as GET /api/v1/items returns it. */
+export type StoredItem = { id: string; etag: string; ciphertext: string };
+
+/**
+ * Decrypts every stored item it can, sorted by name. One that cannot be read
+ * must not hide the others: its id goes to unreadable.
+ */
+export async function decryptEntries(raw: StoredItem[], identity: string): Promise<Listing> {
+  const unreadable: string[] = [];
+  const entries: Entry[] = [];
+  await Promise.all(
+    raw.map(async (r) => {
+      try {
+        const { item, old } = upgrade((await decryptItem(fromBase64(r.ciphertext), identity)) as Item);
+        entries.push({ id: r.id, etag: r.etag, item, oldFormat: old });
+      } catch {
+        unreadable.push(r.id);
+      }
+    }),
+  );
+  entries.sort((a, b) => a.item.name.localeCompare(b.item.name));
+  return { entries, unreadable: unreadable.sort() };
+}
 
 export class VaultClient {
   private identity: string | null = null;
@@ -196,16 +220,9 @@ export class VaultClient {
     this.forget();
   }
 
-  async listItems(): Promise<Entry[]> {
-    const raw = await this.api<{ id: string; etag: string; ciphertext: string }[]>("GET", "/api/v1/items");
-    const id = this.identity as string;
-    const entries = await Promise.all(
-      raw.map(async (r) => {
-        const { item, old } = upgrade((await decryptItem(fromBase64(r.ciphertext), id)) as Item);
-        return { id: r.id, etag: r.etag, item, oldFormat: old };
-      }),
-    );
-    return entries.sort((a, b) => a.item.name.localeCompare(b.item.name));
+  async listItems(): Promise<Listing> {
+    const raw = await this.api<StoredItem[]>("GET", "/api/v1/items");
+    return decryptEntries(raw, this.identity as string);
   }
 
   /**

@@ -32,7 +32,7 @@ import { useVault } from "@/vault-context";
 export function AppShell() {
   const { pathname } = useLocation();
   const [params] = useSearchParams();
-  const { entries, oldFormat, lock } = useVault();
+  const { entries, oldFormat, unreadable, lock } = useVault();
   const counts = useMemo(() => countByKind(entries), [entries]);
   const onVault = pathname.startsWith("/personal/vault");
   const activeKind = onVault ? params.get("kind") : null;
@@ -149,6 +149,19 @@ export function AppShell() {
           </div>
         </header>
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4 md:p-6">
+          {unreadable.length > 0 && (
+            <p role="status" className="rounded-md border px-3 py-2 text-sm text-muted-foreground">
+              {plural(
+                unreadable.length,
+                "élément ne peut pas être déchiffré et reste masqué",
+                "éléments ne peuvent pas être déchiffrés et restent masqués",
+              )}
+              . Les autres sont utilisables.{" "}
+              <Link to="/personal/health" className="underline">
+                Voir l'état du système
+              </Link>
+            </p>
+          )}
           {oldFormat > 0 && (
             <p role="status" className="rounded-md border px-3 py-2 text-sm text-muted-foreground">
               {plural(oldFormat, "élément est stocké", "éléments sont stockés")} dans l'ancien format. Pour les

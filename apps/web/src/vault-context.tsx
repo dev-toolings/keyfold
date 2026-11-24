@@ -47,6 +47,8 @@ type VaultContext = {
   entries: vault.Entry[];
   /** Items still stored in an older format: `kf migrate -apply` rewrites them. */
   oldFormat: number;
+  /** Ids of the items that could not be decrypted: they are in no list. */
+  unreadable: string[];
   loading: boolean;
   error: string;
   /** Reference date for every statistic, taken when the entries were loaded. */
@@ -74,6 +76,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const location = useLocation();
   const [entries, setEntries] = useState<vault.Entry[]>([]);
+  const [unreadable, setUnreadable] = useState<string[]>([]);
   const [now, setNow] = useState(() => new Date());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -93,7 +96,9 @@ export function VaultProvider({ children }: { children: ReactNode }) {
   );
 
   const reload = useCallback(async () => {
-    setEntries(await vault.listItems());
+    const listing = await vault.listItems();
+    setEntries(listing.entries);
+    setUnreadable(listing.unreadable);
     setNow(new Date());
   }, []);
 
@@ -183,8 +188,8 @@ export function VaultProvider({ children }: { children: ReactNode }) {
   const oldFormat = useMemo(() => entries.filter((e) => e.oldFormat).length, [entries]);
 
   const value = useMemo(
-    () => ({ entries, oldFormat, loading, error, now, flags, save, remove, attach, download, lock }),
-    [entries, oldFormat, loading, error, now, flags, save, remove, attach, download, lock],
+    () => ({ entries, oldFormat, unreadable, loading, error, now, flags, save, remove, attach, download, lock }),
+    [entries, oldFormat, unreadable, loading, error, now, flags, save, remove, attach, download, lock],
   );
   return <Context.Provider value={value}>{children}</Context.Provider>;
 }

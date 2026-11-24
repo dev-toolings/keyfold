@@ -20,7 +20,7 @@ const RULES: Record<Filter, string> = {
 
 /** Health check: what the server stores, then the vault indicators, then the same check for AI agents. */
 export function HealthPage() {
-  const { entries, flags } = useVault();
+  const { entries, unreadable, flags } = useVault();
   const [server, setServer] = useState<ServerHealth | null>(null);
   const [checkedAt, setCheckedAt] = useState(() => new Date());
   const [error, setError] = useState("");
@@ -96,9 +96,22 @@ export function HealthPage() {
                 value={formatNumber(server.items)}
                 ok={server.items === entries.length}
                 helper={
-                  server.items === entries.length
-                    ? "Tous déchiffrés dans ce navigateur"
-                    : `${formatNumber(entries.length)} chargés ici : un autre client a écrit depuis, rechargez la page`
+                  unreadable.length > 0 ? (
+                    <>
+                      {plural(
+                        unreadable.length,
+                        "élément ne peut pas être déchiffré",
+                        "éléments ne peuvent pas être déchiffrés",
+                      )}{" "}
+                      (fichier abîmé ou format inconnu) :{" "}
+                      <code className="font-mono break-all">{unreadable.join(", ")}</code>. Restaurez une sauvegarde, ou
+                      supprimez le fichier du même nom dans <code>items/</code> sur le serveur.
+                    </>
+                  ) : server.items === entries.length ? (
+                    "Tous déchiffrés dans ce navigateur"
+                  ) : (
+                    `${formatNumber(entries.length)} chargés ici : un autre client a écrit depuis, rechargez la page`
+                  )
                 }
               />
               <Kpi
