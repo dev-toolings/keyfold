@@ -74,6 +74,23 @@ export function HealthPage() {
         </Card>
       )}
 
+      {unreadable.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <TriangleExclamationPoint className="size-4" aria-hidden="true" />
+              {plural(unreadable.length, "élément illisible", "éléments illisibles")}
+            </CardTitle>
+            <CardDescription>
+              <code className="font-mono break-all">{unreadable.map((id) => `items/${id}.age`).join(", ")}</code>.
+              Fichier abîmé, ou format plus récent que cette application. Mettez d'abord Keyfold à jour : un format plus
+              récent redevient lisible. Sinon, restaurez une sauvegarde. Supprimer le fichier sur le serveur efface
+              l'élément pour de bon. En attendant, le coffre est en lecture seule.
+            </CardDescription>
+          </CardHeader>
+        </Card>
+      )}
+
       <section className="flex flex-col gap-3">
         <h3 className="text-sm font-medium">Serveur</h3>
         {!server && !error ? (
@@ -96,21 +113,11 @@ export function HealthPage() {
                 value={formatNumber(server.items)}
                 ok={server.items === entries.length}
                 helper={
-                  unreadable.length > 0 ? (
-                    <>
-                      {plural(unreadable.length, "élément ne peut pas être lu", "éléments ne peuvent pas être lus")} :{" "}
-                      <code className="font-mono break-all">
-                        {unreadable.map((id) => `items/${id}.age`).join(", ")}
-                      </code>
-                      . Fichier abîmé, ou format plus récent que cette application. Mettez d'abord Keyfold à jour : un
-                      format plus récent redevient lisible. Sinon, restaurez une sauvegarde. Supprimer le fichier sur le
-                      serveur efface l'élément pour de bon.
-                    </>
-                  ) : server.items === entries.length ? (
-                    "Tous déchiffrés dans ce navigateur"
-                  ) : (
-                    `${formatNumber(entries.length)} chargés ici : un autre client a écrit depuis, rechargez la page`
-                  )
+                  unreadable.length > 0
+                    ? `${formatNumber(entries.length)} déchiffrés ici, ${plural(unreadable.length, "illisible", "illisibles")} : le détail est en haut de cette page`
+                    : server.items === entries.length
+                      ? "Tous déchiffrés dans ce navigateur"
+                      : `${formatNumber(entries.length)} chargés ici : un autre client a écrit depuis, rechargez la page`
                 }
               />
               <Kpi

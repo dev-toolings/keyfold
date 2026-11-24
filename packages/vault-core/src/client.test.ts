@@ -71,9 +71,11 @@ test("a newer format and a file that is not an item are unreadable, not shown", 
       await stored("0a", { v: 99, name: "fake-newer", kind: "login", value: "fake-value", note: "", updated_at: "" }),
       await stored("0b", { v: 2 }),
       await stored("0c", { v: 2, name: "fake-no-value", kind: "login" }),
+      await stored("0d", { v: 2, name: "fake-kind", kind: "unknown", value: "fake-value" }),
+      await stored("0e", { v: 2, name: "fake-list", kind: "login", value: "fake-value", attachments: "none" }),
     ],
     identity,
   );
 
-  expect(listing).toEqual({ entries: [], unreadable: ["0a", "0b", "0c"] });
+  expect(listing).toEqual({ entries: [], unreadable: ["0a", "0b", "0c", "0d", "0e"] });
 });

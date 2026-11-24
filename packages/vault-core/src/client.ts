@@ -11,7 +11,7 @@ import {
   unwrapIdentity,
   wrapIdentity,
 } from "./crypto";
-import { type BlobRef, type Entry, type Item, type Listing, upgrade } from "./item";
+import { type BlobRef, type Entry, type Item, isItem, type Listing, upgrade } from "./item";
 
 /** Thrown when the session is gone (lock, idle expiry, server restart). */
 export class LockedError extends Error {}
@@ -53,10 +53,7 @@ export async function decryptEntries(raw: StoredItem[], identity: string): Promi
     raw.map(async (r) => {
       try {
         const { item, old } = upgrade((await decryptItem(fromBase64(r.ciphertext), identity)) as Item);
-        // What every list and form reads: without them the file is not an item.
-        if (typeof item?.name !== "string" || typeof item.kind !== "string" || typeof item.value !== "string") {
-          throw new Error("not an item");
-        }
+        if (!isItem(item)) throw new Error("not an item");
         entries.push({ id: r.id, etag: r.etag, item, oldFormat: old });
       } catch {
         unreadable.push(r.id);

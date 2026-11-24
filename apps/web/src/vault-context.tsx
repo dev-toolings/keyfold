@@ -112,19 +112,25 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 
   // The name and the attachments of an item that cannot be read are unknown:
   // a write could take its name, or delete a file it still lists. Reading stays
-  // possible; writing waits for the item to be readable again or gone.
-  const writable = useCallback(() => {
-    if (unreadable.length > 0) {
+  // possible; writing waits for the item to be readable again or gone. The
+  // vault is listed anew before each write: another client may have stored
+  // such an item since this page loaded, and a listing that fails proves
+  // nothing. The entries on screen are left alone, with their ETags: a write
+  // over an item changed elsewhere must still be refused as a conflict.
+  const writable = useCallback(async () => {
+    const listing = await vault.listItems();
+    setUnreadable(listing.unreadable);
+    if (listing.unreadable.length > 0) {
       throw new Error(
         "Coffre en lecture seule tant qu'un élément est illisible. Le détail est dans l'état du système.",
       );
     }
-  }, [unreadable]);
+  }, []);
 
   const save = useCallback(
     (id: string | null, draft: Draft) =>
       run(async () => {
-        writable();
+        await writable();
         // A name is unique: saving under an existing name overwrites that item, like `kf set`.
         const edited = entries.find((e) => e.id === id) ?? null;
         const target = entries.find((e) => e.item.name === draft.name) ?? edited;
@@ -167,7 +173,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
   const remove = useCallback(
     async (id: string) =>
       (await run(async () => {
-        writable();
+        await writable();
         const entry = entries.find((e) => e.id === id);
         if (entry) await vault.deleteItem(entry);
         await reload();
@@ -179,7 +185,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
   const attach = useCallback(
     (file: File) =>
       run(async () => {
-        writable();
+        await writable();
         return vault.uploadAttachment(file.name, new Uint8Array(await file.arrayBuffer()));
       }),
     [run, writable],

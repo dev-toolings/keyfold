@@ -53,6 +53,22 @@ export type Entry = { id: string; etag: string; item: Item; oldFormat: boolean }
  */
 export type Listing = { entries: Entry[]; unreadable: string[] };
 
+/**
+ * Whether a decrypted value has the shape every list and form reads: a name, a
+ * value, a known kind, and lists where lists are expected. Anything else is
+ * not an item this code can show.
+ */
+export function isItem(x: unknown): x is Item {
+  const it = x as Item | null;
+  const list = (v: unknown) => v == null || Array.isArray(v);
+  return (
+    typeof it?.name === "string" &&
+    typeof it.value === "string" &&
+    (KINDS as readonly string[]).includes(it.kind) &&
+    [it.urls, it.fields, it.attachments, it.history, it.passkeys].every(list)
+  );
+}
+
 /** Creation date of an item, falling back to its last update when created_at is missing or empty. */
 export function createdAt(item: Item): string {
   return item.created_at || item.updated_at;
