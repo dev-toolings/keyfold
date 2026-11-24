@@ -85,7 +85,7 @@ func setupVault(t *testing.T) (string, *store.Store, *age.X25519Identity) {
 	if err := st.Init(wrapped, id.Recipient().String()); err != nil {
 		t.Fatal(err)
 	}
-	ts := httptest.NewServer(api.New(st, api.DefaultMaxBlob))
+	ts := httptest.NewServer(api.New(st, api.Options{}))
 	t.Cleanup(ts.Close)
 
 	t.Setenv("XDG_RUNTIME_DIR", dir)

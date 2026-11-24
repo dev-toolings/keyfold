@@ -33,7 +33,7 @@ func TestMCPToolsNeverReturnValues(t *testing.T) {
 	if err := st.Init(wrapped, id.Recipient().String()); err != nil {
 		t.Fatal(err)
 	}
-	ts := httptest.NewServer(api.New(st, api.DefaultMaxBlob))
+	ts := httptest.NewServer(api.New(st, api.Options{}))
 	defer ts.Close()
 
 	t.Setenv("XDG_RUNTIME_DIR", dir)

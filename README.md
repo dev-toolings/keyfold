@@ -75,6 +75,10 @@ go run ./apps/keyfold-server -listen 127.0.0.1:8717 -data ./data -web ./apps/web
 ```
 
 `-web` serves the built UI as static files when the directory exists.
+`-allowed-hosts` (or `KEYFOLD_ALLOWED_HOSTS`) lists the host names accepted
+besides loopback ones, comma separated: the names a TLS reverse proxy in front
+of the server answers to. Any other `Host` gets 403, for the API and the web UI
+alike.
 `make site-build` builds the public product site (`apps/site`: landing pages,
 `llms.txt` and `llms-full.txt`, no vault) as static files into `apps/site/out`;
 `make site-dev` starts its dev server. That is what keyfold.pulseview.app

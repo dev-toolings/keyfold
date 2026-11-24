@@ -13,9 +13,9 @@ import (
 	"image/png"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +23,7 @@ import (
 	"filippo.io/age"
 	"github.com/pquerna/otp/totp"
 
+	"keyfold/internal/hosts"
 	"keyfold/internal/logger"
 	"keyfold/internal/store"
 	"keyfold/internal/vault"
@@ -54,7 +55,9 @@ type challenge struct {
 
 type server struct {
 	store   *store.Store
-	maxBlob int64 // attachment size limit, in bytes
+	maxBlob int64        // attachment size limit, in bytes
+	hosts   []string     // host names accepted besides loopback ones
+	web     http.Handler // built web UI, nil when the API is served alone
 
 	now     func() time.Time // replaced by tests
 	started time.Time
@@ -68,11 +71,27 @@ type server struct {
 	totpLastStep    int64 // last accepted time step: a code is used once
 }
 
-// New returns the API handler for the given store. maxBlob limits the size of
-// one attachment, in bytes.
-func New(st *store.Store, maxBlob int64) http.Handler {
+// Options configures the handler New returns.
+type Options struct {
+	// MaxBlob limits the size of one attachment, in bytes. Zero means DefaultMaxBlob.
+	MaxBlob int64
+	// Hosts are the host names accepted besides loopback ones, lower case and
+	// without a port: the names a TLS reverse proxy in front of the server answers to.
+	Hosts []string
+	// Web serves the built web UI on every path outside /api/. Optional.
+	Web http.Handler
+}
+
+// New returns the handler for the given store: the API under /api/ and, when
+// o.Web is set, the web UI everywhere else, behind the same host check and
+// access log.
+func New(st *store.Store, o Options) http.Handler {
 	s := newServer(st)
-	s.maxBlob = maxBlob
+	if o.MaxBlob > 0 {
+		s.maxBlob = o.MaxBlob
+	}
+	s.hosts = o.Hosts
+	s.web = o.Web
 	return s.handler()
 }
 
@@ -99,7 +118,11 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/totp/setup", s.auth(s.totpSetup))
 	mux.HandleFunc("POST /api/v1/totp/enable", s.auth(s.totpEnable))
 	mux.HandleFunc("POST /api/v1/totp/disable", s.auth(s.totpDisable))
-	return logger.Access(localOnly(http.NewCrossOriginProtection().Handler(s.limitBody(mux))))
+	if s.web != nil {
+		mux.Handle("/api/", http.NotFoundHandler()) // an unknown API path is not a page of the UI
+		mux.Handle("/", s.web)
+	}
+	return logger.Access(s.allowedHost(http.NewCrossOriginProtection().Handler(s.limitBody(mux))))
 }
 
 // limitBody caps request bodies: 1 MiB, or maxBlob for an attachment. It sets
@@ -116,16 +139,13 @@ func (s *server) limitBody(next http.Handler) http.Handler {
 	})
 }
 
-// localOnly rejects requests whose Host is not a loopback name. It stops DNS
-// rebinding, where a hostile page reaches 127.0.0.1 under its own domain name.
-// Cross-site writes are rejected by http.CrossOriginProtection.
-func localOnly(next http.Handler) http.Handler {
+// allowedHost rejects requests whose Host is neither a loopback name nor one
+// of the declared hosts. It stops DNS rebinding, where a hostile page reaches
+// the server under its own domain name. Cross-site writes are rejected by
+// http.CrossOriginProtection.
+func (s *server) allowedHost(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		host := r.Host
-		if h, _, err := net.SplitHostPort(r.Host); err == nil {
-			host = h
-		}
-		if ip := net.ParseIP(host); host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+		if host := hosts.Name(r.Host); !hosts.Loopback(host) && !slices.Contains(s.hosts, host) {
 			fail(w, http.StatusForbidden, "forbidden host")
 			return
 		}

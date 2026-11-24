@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"keyfold/internal/api"
 	"keyfold/internal/logger"
@@ -18,6 +19,8 @@ func main() {
 	data := flag.String("data", "./data", "vault data directory")
 	web := flag.String("web", "", "directory of the built web UI to serve (optional)")
 	maxBlob := flag.Int64("max-blob", api.DefaultMaxBlob, "largest attachment accepted, in bytes")
+	allowedHosts := flag.String("allowed-hosts", os.Getenv("KEYFOLD_ALLOWED_HOSTS"),
+		"comma separated host names accepted besides loopback ones: the names a TLS reverse proxy answers to (default $KEYFOLD_ALLOWED_HOSTS)")
 	disableTOTP := flag.Bool("disable-totp", false, "turn the second factor off and exit (recovery, needs disk access)")
 	flag.Parse()
 	slog.SetDefault(logger.New(os.Getenv("KEYFOLD_ENV"), os.Stdout))
@@ -35,18 +38,22 @@ func main() {
 		slog.Info("TOTP disabled", "data", *data)
 		return
 	}
-	mux := http.NewServeMux()
-	mux.Handle("/api/", api.New(st, *maxBlob))
+	opts := api.Options{MaxBlob: *maxBlob, Hosts: hostList(*allowedHosts)}
 	if *web != "" {
 		if info, err := os.Stat(*web); err == nil && info.IsDir() {
-			mux.Handle("/", spa(*web))
+			opts.Web = spa(*web)
 		} else {
 			slog.Warn("web dir not found, serving the API only", "dir", *web)
 		}
 	}
-	slog.Info("keyfold-server listening", "url", "http://"+*listen, "data", *data)
-	slog.Error("server stopped", "err", http.ListenAndServe(*listen, mux))
+	slog.Info("keyfold-server listening", "url", "http://"+*listen, "data", *data, "allowedHosts", opts.Hosts)
+	slog.Error("server stopped", "err", http.ListenAndServe(*listen, api.New(st, opts)))
 	os.Exit(1)
+}
+
+// hostList splits the -allowed-hosts value into lower case host names.
+func hostList(v string) []string {
+	return strings.FieldsFunc(strings.ToLower(v), func(r rune) bool { return r == ',' || r == ' ' })
 }
 
 // spa serves the built UI and answers index.html for paths that are not
