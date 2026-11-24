@@ -78,6 +78,14 @@ at the root. `make help` lists every command.
 
 The server is Unix-only and tested on Linux. `kf` builds for Linux and macOS.
 
+Follow the [self-hosting guide](https://keyfold.pulseview.app/en/self-hosting)
+to install Keyfold, set up private or public HTTPS access, create the vault,
+back it up and update it. [packaging/](packaging/) contains the Compose and
+Caddy setup, the systemd service and the backup timer. See the
+[restore drill](#restore-drill) to check an archive before you need it.
+
+These commands start the server for direct local use.
+
 ```sh
 go run ./apps/keyfold-server                      # listens on 127.0.0.1:8717, data in ./data
 go run ./apps/keyfold-server -listen 127.0.0.1:8717 -data ./data -web ./apps/web/dist
@@ -321,12 +329,10 @@ claude mcp add keyfold -- "$PWD/bin/kf" mcp
 
 ## Not done
 
-- The server relies on a same-machine reverse proxy for TLS. [packaging/](packaging/)
-  includes a container, a Compose example with Caddy and a systemd unit.
-- The deployment kit is for private networks. Restrict access to devices on a
-  network you trust.
-- Off-machine backups: [packaging/](packaging/) provides a timer and local
-  rotation. The operator copies archives off the machine.
+- Multiple users and vault sharing.
+- A browser extension and a mobile app.
+- TLS in the server itself. HTTPS is handled by the reverse proxy.
+- Automatic off-machine backups. The backup timer rotates local archives.
 
 ## Backup and restore
 

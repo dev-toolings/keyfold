@@ -1,8 +1,8 @@
 // Full factual description for answer engines. Page copy (definition, features, security,
 // FAQ, stack) comes from the content module; the fixed text holds only README facts it lacks.
 import { CONTENT, STACK } from "@/content/landing";
-import { heading, PAGE_URL, plainText } from "@/lib/llms";
-import { REPO_URL } from "@/lib/site";
+import { heading, PAGE_URL, plainText, README_URL } from "@/lib/llms";
+import { REPO_URL, SITE_URL } from "@/lib/site";
 
 // Without it, output: "export" refuses the route at build time.
 export const dynamic = "force-static";
@@ -112,8 +112,11 @@ export function GET(): Response {
     "",
     "## Self-hosting",
     "",
-    "- One Go module and one Bun workspace at the repository root. `make build` builds `bin/kf` and `bin/keyfold-server`; `make help` lists every target.",
-    "- Run the server: `go run ./apps/keyfold-server -listen 127.0.0.1:8717 -data ./data -web ./apps/web/dist`.",
+    `- [Self-hosting guide](${SITE_URL}/en/self-hosting) and [French guide](${SITE_URL}/auto-hebergement): install on Linux, set up HTTPS, create the vault, connect the CLI, back up and update.`,
+    "- The release workflow publishes Linux archives with both binaries, the web UI and the deployment kit, and a versioned GHCR image. Use the kit's Compose and Caddy setup or its systemd service. Until a release exists, build from a clone.",
+    "- Private HTTPS is recommended. For public HTTPS, configure Caddy with a public domain and trusted certificate. The proxy must preserve the original `Host` from `KEYFOLD_ALLOWED_HOSTS` and append the client IP to `X-Forwarded-For`. Verify both from another device before creating the vault, including when using Tailscale Serve.",
+    "- Use the install token from the startup log for remote vault creation. Enable TOTP over direct loopback on the server before unlocking the vault from another device.",
+    `- [Backup and restore](${README_URL}#backup-and-restore): copy archives off the host, test a restore and back up before updating. An older server refuses a newer data layout. In that case roll back with the pre-update archive.`,
     "- Each access log line includes the method, path, status, duration, client IP, request ID and matched route pattern when available. Access logs omit raw headers, request bodies and query strings. Internal errors also log their text, which can include file paths or operating system errors.",
     "- Recovery when the TOTP phone is lost: `keyfold-server -disable-totp -data ./data` on the server machine.",
     "",
