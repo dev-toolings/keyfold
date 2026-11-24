@@ -66,6 +66,7 @@ commands:
                              (list names, generate a secret; never a value)
 
 The server URL defaults to $KEYFOLD_SERVER, then http://127.0.0.1:8717.
+For remote init, set $KEYFOLD_INSTALL_TOKEN to the install token from the server log.
 `
 
 func main() {
@@ -92,7 +93,7 @@ func run(args []string, stdin, stdout *os.File, stderr io.Writer) int {
 	code := 0
 	switch cmd {
 	case "init":
-		err = cmdInit(c, stdin, stderr)
+		err = cmdInit(c, func(prompt string) (string, error) { return readPassword(stdin, stderr, prompt) }, stderr)
 	case "unlock":
 		err = cmdUnlock(c, rest, stdin, stderr)
 	case "agent":
@@ -192,7 +193,7 @@ func (c *client) doWith(method, path string, hdr http.Header, in, out any) error
 		}
 		body = bytes.NewReader(b)
 	}
-	// The session token and the TOTP code travel in headers: never in clear
+	// Tokens and the TOTP code travel in headers: never in clear
 	// over a network. Checked here, so commands that stay local (lock, the
 	// agent) run whatever the server URL is.
 	if u, err := url.Parse(c.base); err != nil || (u.Scheme != "https" && (u.Scheme != "http" || !hosts.Loopback(hosts.Name(u.Host)))) {
@@ -368,7 +369,7 @@ func readPassword(stdin *os.File, stderr io.Writer, prompt string) (string, erro
 	return string(b), nil
 }
 
-func cmdInit(c *client, stdin *os.File, stderr io.Writer) error {
+func cmdInit(c *client, password func(string) (string, error), stderr io.Writer) error {
 	var st struct {
 		Initialized bool `json:"initialized"`
 	}
@@ -378,14 +379,14 @@ func cmdInit(c *client, stdin *os.File, stderr io.Writer) error {
 	if st.Initialized {
 		return errors.New("vault already initialized")
 	}
-	pw, err := readPassword(stdin, stderr, "New master password: ")
+	pw, err := password("New master password: ")
 	if err != nil {
 		return err
 	}
 	if err := vault.CheckMasterPassword(pw); err != nil {
 		return err
 	}
-	again, err := readPassword(stdin, stderr, "Repeat master password: ")
+	again, err := password("Repeat master password: ")
 	if err != nil {
 		return err
 	}
@@ -400,7 +401,11 @@ func cmdInit(c *client, stdin *os.File, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if err := c.do("POST", "/api/v1/init", map[string]any{"identity": wrapped, "recipient": id.Recipient().String()}, nil); err != nil {
+	hdr := http.Header{}
+	if token := os.Getenv("KEYFOLD_INSTALL_TOKEN"); token != "" {
+		hdr.Set("X-Install-Token", token)
+	}
+	if err := c.doWith("POST", "/api/v1/init", hdr, map[string]any{"identity": wrapped, "recipient": id.Recipient().String()}, nil); err != nil {
 		return err
 	}
 	fmt.Fprintln(stderr, "vault initialized")

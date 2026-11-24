@@ -6,16 +6,20 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
 	"filippo.io/age"
 	"github.com/pquerna/otp/totp"
 
+	"keyfold/internal/logger"
 	"keyfold/internal/store"
 	"keyfold/internal/vault"
 )
@@ -71,6 +75,224 @@ func call(t *testing.T, ts *httptest.Server, method, path, token string, in, out
 		json.NewDecoder(resp.Body).Decode(out)
 	}
 	return resp.StatusCode
+}
+
+func newInitTestStore(t *testing.T) *store.Store {
+	t.Helper()
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
+func initTestRequest(t *testing.T, address, token string) (*http.Request, *age.X25519Identity) {
+	t.Helper()
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapped, err := vault.WrapIdentity(id, "fake-install-master-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(map[string]any{"identity": wrapped, "recipient": id.Recipient().String()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := clientRequest(http.MethodPost, "/api/v1/init", address)
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		r.Header.Set("X-Install-Token", token)
+	}
+	return r, id
+}
+
+func TestNonLocalInitRequiresInstallToken(t *testing.T) {
+	st := newInitTestStore(t)
+	h := newServer(st).handler()
+	r, _ := initTestRequest(t, "192.0.2.1", "")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("init without a token: got %d, want 403", w.Code)
+	}
+	var reply map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &reply); err != nil {
+		t.Fatal(err)
+	}
+	if len(reply) != 1 {
+		t.Error("the response must contain only the error field")
+	}
+	if !strings.Contains(reply["error"], "X-Install-Token") || !strings.Contains(reply["error"], "server log") {
+		t.Error("the error must point to the header and the server log")
+	}
+	if st.Initialized() {
+		t.Fatal("init without a token created the vault")
+	}
+}
+
+func TestInstallTokenCreatesVaultOnce(t *testing.T) {
+	st := newInitTestStore(t)
+	s := newServer(st)
+	h := s.handler()
+	token := s.installToken
+	r, owner := initTestRequest(t, "192.0.2.1", token)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("init with the token: got %d, want 201", w.Code)
+	}
+	if s.installToken != "" {
+		t.Fatal("the install token was retained after creation")
+	}
+
+	r, _ = initTestRequest(t, "192.0.2.2", token)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("init with a used token: got %d, want 409", w.Code)
+	}
+	wrapped, recipient, err := st.Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := vault.UnwrapIdentity(wrapped, "fake-install-master-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id.String() != owner.String() || recipient != owner.Recipient().String() {
+		t.Fatal("the vault identity or recipient does not belong to the first caller")
+	}
+}
+
+func TestInitWithDirectorySyncError(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newServer(st)
+	h := s.handler()
+	token := s.installToken
+	syncErr := &os.PathError{Op: "sync", Path: dir, Err: fs.ErrPermission}
+
+	s.initStore = func([]byte, string) error { return syncErr }
+	r, _ := initTestRequest(t, "192.0.2.1", token)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusInternalServerError || st.Initialized() || s.installToken != token {
+		t.Fatalf("init error before identity write: got %d, want 500 with the vault uninitialized and the token retained", w.Code)
+	}
+
+	s.initStore = func(identity []byte, recipient string) error {
+		if err := st.Init(identity, recipient); err != nil {
+			return err
+		}
+		return syncErr
+	}
+	var log bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(logger.New("production", &log))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	r, owner := initTestRequest(t, "192.0.2.1", token)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusCreated || !st.Initialized() || s.installToken != "" {
+		t.Fatalf("init error after identity write: got %d, want 201 with the vault initialized and the token consumed", w.Code)
+	}
+	if !strings.Contains(log.String(), `"msg":"internal error"`) || !strings.Contains(log.String(), syncErr.Error()) {
+		t.Fatal("the directory sync failure was not logged as an internal error")
+	}
+	wrapped, recipient, err := st.Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := vault.UnwrapIdentity(wrapped, "fake-install-master-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id.String() != owner.String() || recipient != owner.Recipient().String() {
+		t.Fatal("the vault identity or recipient does not belong to the successful caller")
+	}
+}
+
+func TestWrongInstallTokenDoesNotConsumeIt(t *testing.T) {
+	s := newServer(newInitTestStore(t))
+	h := s.handler()
+	token := s.installToken
+	wrong := strings.Repeat("x", len(token))
+	r, _ := initTestRequest(t, "192.0.2.1", wrong)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("init with a wrong token: got %d, want 403", w.Code)
+	}
+	if strings.Contains(w.Body.String(), token) || strings.Contains(w.Body.String(), wrong) {
+		t.Fatal("the error includes an install token")
+	}
+
+	r, _ = initTestRequest(t, "192.0.2.1", token)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("init with the right token after a wrong one: got %d, want 201", w.Code)
+	}
+}
+
+func TestLocalInitNeedsNoInstallToken(t *testing.T) {
+	s := newServer(newInitTestStore(t))
+	r, _ := initTestRequest(t, "", "")
+	w := httptest.NewRecorder()
+	s.handler().ServeHTTP(w, r)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("local init without a token: got %d, want 201", w.Code)
+	}
+	if s.installToken != "" {
+		t.Fatal("the install token was retained after local creation")
+	}
+}
+
+func TestInstallTokenOnlyLoggedAtStartup(t *testing.T) {
+	for _, face := range []struct{ env, pattern string }{
+		{"production", `"installToken":"([0-9a-f]{32,})"`},
+		{"development", `installToken=([0-9a-f]{32,})`},
+	} {
+		t.Run(face.env, func(t *testing.T) {
+			var log bytes.Buffer
+			previous := slog.Default()
+			slog.SetDefault(logger.New(face.env, &log))
+			t.Cleanup(func() { slog.SetDefault(previous) })
+
+			st := newInitTestStore(t)
+			h := New(st, Options{})
+			startup := log.String()
+			match := regexp.MustCompile(face.pattern).FindStringSubmatch(startup)
+			if len(match) != 2 || strings.Count(startup, "\n") != 1 || !strings.Contains(startup, "create the vault") {
+				t.Fatal("startup must log one readable install token and its purpose")
+			}
+			token := match[1]
+			log.Reset()
+
+			r, _ := initTestRequest(t, "192.0.2.1", token)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if w.Code != http.StatusCreated {
+				t.Fatalf("init with the logged token: got %d, want 201", w.Code)
+			}
+			if !strings.Contains(log.String(), "/api/v1/init") || strings.Contains(log.String(), token) {
+				t.Fatal("init must have an access line without the install token")
+			}
+			log.Reset()
+
+			New(st, Options{})
+			if log.Len() != 0 {
+				t.Fatal("startup of an existing vault logged an install message")
+			}
+		})
+	}
 }
 
 type challengeResp struct {
