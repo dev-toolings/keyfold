@@ -1,0 +1,19 @@
+{
+	# Compose maps public-facing TCP 443 to this unprivileged port.
+	https_port 8443
+	auto_https disable_redirects
+	skip_install_trust
+	servers {
+		protocols h1 h2
+	}
+}
+
+{$KEYFOLD_HOST} {
+	# For a public certificate, use a public DNS name and remove tls internal.
+	# For DNS validation, configure the ACME DNS challenge with a DNS provider module.
+	tls internal
+
+	# reverse_proxy preserves Host and appends the connecting client's IP to X-Forwarded-For by default.
+	# https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#defaults
+	reverse_proxy 127.0.0.1:8717
+}
