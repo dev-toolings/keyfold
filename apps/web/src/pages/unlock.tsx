@@ -1,5 +1,5 @@
 import { LoaderCircle } from "lucide-react";
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { type Location, Navigate, useLocation, useNavigate } from "react-router";
 import { TotpSetup } from "@/components/totp-setup";
 import { Button } from "@/components/ui/button";
@@ -22,12 +22,15 @@ export function UnlockPage() {
   const [error, setError] = useState("");
   const done = () => navigate(target, { replace: true });
 
-  useEffect(() => {
-    vault
+  const refreshStatus = useCallback(() => {
+    return vault
       .status()
       .then(setStatus)
       .catch((e) => setError(errorMessage(e)));
   }, []);
+  useEffect(() => {
+    void refreshStatus();
+  }, [refreshStatus]);
 
   if (vault.isUnlocked() && !offerTotp) return <Navigate to={target} replace />;
 
@@ -67,6 +70,7 @@ export function UnlockPage() {
             first={!status.initialized}
             totp={status.totp}
             onDone={() => (status.initialized ? done() : setOfferTotp(true))}
+            refreshStatus={refreshStatus}
           />
         )}
       </Card>
@@ -77,7 +81,17 @@ export function UnlockPage() {
   );
 }
 
-function PasswordForm({ first, totp, onDone }: { first: boolean; totp: boolean; onDone: () => void }) {
+function PasswordForm({
+  first,
+  totp,
+  onDone,
+  refreshStatus,
+}: {
+  first: boolean;
+  totp: boolean;
+  onDone: () => void;
+  refreshStatus: () => Promise<void>;
+}) {
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [installToken, setInstallToken] = useState("");
@@ -106,6 +120,7 @@ function PasswordForm({ first, totp, onDone }: { first: boolean; totp: boolean; 
           ? "Ouvrez Keyfold sur la machine qui héberge le serveur, activez la double authentification dans les paramètres, puis revenez sur cette page pour réessayer."
           : message,
       );
+      if (!first) await refreshStatus();
       setBusy(false);
     }
   }

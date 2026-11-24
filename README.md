@@ -220,10 +220,16 @@ the temp files a killed one left behind.
 
 ## Second factor (TOTP)
 
-Required to unlock from another device. Open Keyfold directly on the server
-machine to enable it after creating the vault or in Settings
-(`/personal/settings`, bottom of the sidebar), where the master password can also
-be changed. TOTP is optional for direct local access.
+The server refuses remote downloads of the encrypted vault identity while TOTP
+is off. When TOTP is on, downloads require a valid code or a live session. A copy
+of the encrypted identity lets someone try master passwords offline. A client
+that already holds the decrypted identity, such as the `kf` agent or an unlocked
+browser tab, can answer a challenge and start a new session without a code. An
+unlocked remote client can turn TOTP off with a valid code.
+
+Open Keyfold directly on the server machine to enable TOTP after creating the
+vault or in Settings (`/personal/settings`, bottom of the sidebar), where the
+master password can also be changed. TOTP is optional for direct local access.
 
 - With TOTP on, retrieving the encrypted identity requires a valid code or a
   live session.
@@ -279,9 +285,12 @@ claude mcp add keyfold -- "$PWD/bin/kf" mcp
   identity. The server never sees the master password, the identity or a value.
 - With TOTP off, `GET /api/v1/identity` is available only over a loopback
   connection to a loopback host without forwarding headers. Other requests
-  receive HTTP 403, even with a live session. Enable TOTP directly on the server
-  machine before unlocking remotely. With TOTP on, the request needs a valid
-  code (header `X-TOTP-Code`) or a live session.
+  receive HTTP 403, even with a live session. With TOTP on, downloading the
+  encrypted identity requires a valid code (header `X-TOTP-Code`) or a live
+  session. The download lets someone try master passwords offline. A client
+  that already holds the decrypted identity can answer a challenge and start a
+  new session without a code. An unlocked remote client can turn TOTP off with a
+  valid code.
 - API access needs a session token, obtained by decrypting a random challenge
   with the identity. Sessions expire after 15 minutes of inactivity or 12 hours
   from creation, whichever comes first. Tokens and challenges live in server
