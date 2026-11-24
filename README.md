@@ -343,6 +343,69 @@ encrypted with age and it asks no master password, but `totp.json` is in clear
 
 `kf export` is not a backup: it leaves attachments out.
 
+### Scheduled backup
+
+For a host installation, the systemd timer takes a daily backup and keeps the
+14 most recent archives. See the [timer installation instructions](packaging/#scheduled-backup).
+
+### Restore drill
+
+Use a machine with `keyfold-server`, `kf`, and the built web UI installed. The
+archive contains encrypted items and attachments, and `totp.json` is in clear
+when present. Unlock with the same master password and, if TOTP was enabled,
+the same authenticator.
+
+1. In a new shell, set `archive` to the path of your backup and restore to a
+   new directory.
+
+   ```sh
+   archive=/path/to/vault.tar
+   umask 077
+   drill=$(mktemp -d)
+   keyfold-server -data "$drill/vault" -restore "$archive"
+   ```
+
+2. If you no longer have the authenticator, disable TOTP on the restored copy
+   before starting it.
+
+   ```sh
+   keyfold-server -data "$drill/vault" -disable-totp
+   ```
+
+3. Start the restored vault on loopback port 8718. Wait for the listening log.
+   Use the path to your built web UI if it differs from the host install path.
+
+   ```sh
+   keyfold-server -listen 127.0.0.1:8718 -data "$drill/vault" -web /usr/local/share/keyfold/web &
+   drill_pid=$!
+   ```
+
+4. Unlock the restored vault with `kf` and count the items. Use a separate CLI
+   agent socket for the drill. Compare the count with what you expect from the
+   archive and check that `kf list` reports no unreadable items.
+
+   ```sh
+   export XDG_RUNTIME_DIR="$drill"
+   export KEYFOLD_SERVER=http://127.0.0.1:8718
+   kf unlock
+   kf list > "$drill/items.txt" && wc -l < "$drill/items.txt"
+   ```
+
+5. Open `http://127.0.0.1:8718` in a private browser window and unlock. If TOTP
+   is enabled, wait for a fresh code after the CLI unlock. Open an item with
+   an attachment, download one from the item sheet, and open the downloaded
+   file to check its contents. Delete that downloaded copy and close the window.
+
+6. Lock the CLI agent, stop the drill server, and remove the restored copy.
+
+   ```sh
+   kf lock
+   kill "$drill_pid"
+   wait "$drill_pid"
+   rm -rf "$drill"
+   exit
+   ```
+
 ## License
 
 Keyfold is licensed under [AGPL-3.0](LICENSE). If you run a modified Keyfold as

@@ -28,6 +28,31 @@ sudo systemctl enable --now keyfold.service
 On first start the server logs the install token you need to create the vault
 from another device.
 
+## Scheduled backup
+
+Use the updated `keyfold.service` for new installations. On an existing host,
+add `User=keyfold` below `DynamicUser=yes` in
+`/etc/systemd/system/keyfold.service` so both services use the same dynamic user.
+From the repository root, install the backup script and units.
+
+```sh
+sudo install -m 0755 packaging/keyfold-backup.sh /usr/local/bin/keyfold-backup
+sudo install -m 0644 packaging/keyfold-backup.service packaging/keyfold-backup.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now keyfold-backup.timer
+```
+
+The timer runs daily with a randomized delay of up to 30 minutes and catches
+up after downtime. Archives are in `/var/lib/keyfold-backups`, a directory with
+mode `0700`. Each successful run keeps the 14 most recent archives, named
+`keyfold-YYYYMMDDTHHMMSSZ.tar` in UTC. Copy archives off the machine regularly
+to a separate storage location with restricted access.
+
+For a manual run, use `keyfold-backup` with an account that can read the vault
+and write into the backup directory. `KEYFOLD_DATA_DIR`, `KEYFOLD_BACKUP_DIR`,
+and `KEYFOLD_BACKUP_KEEP` override the default vault directory (`/var/lib/keyfold`),
+backup directory, and retention count.
+
 ## Reverse proxy requirements
 
 The proxy must pass the original `Host`, whose name must be listed in
