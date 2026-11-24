@@ -19,6 +19,19 @@ export class LockedError extends Error {}
 /** Thrown when an item changed since it was read (HTTP 412), or an unseen item holds the requested name. */
 export class ConflictError extends Error {}
 
+/** Thrown when vault creation requires a valid install token. */
+export class InstallTokenError extends Error {}
+
+/** Checks the hostname of the page. The server decides whether the request is local. */
+export function isLoopbackHost(hostname: string): boolean {
+  return (
+    hostname.toLowerCase() === "localhost" ||
+    hostname === "::1" ||
+    hostname === "[::1]" ||
+    /^127(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/.test(hostname)
+  );
+}
+
 /** Rejects any unseen name holder, then uses the page entry for the edited holder or the first holder. */
 export function selectSaveTarget(
   entries: readonly Entry[],
@@ -110,11 +123,6 @@ export class VaultClient {
       // A server started before the API moved under /api/v1 answers 404 here.
       throw new Error("Le serveur du coffre ne connaît pas cette version de l'API. Relancez-le (make dev).");
     }
-    if (res.status === 403 && path === "/api/v1/init") {
-      throw new Error(
-        "Jeton d'installation manquant ou incorrect. Il figure dans le journal du serveur au premier démarrage.",
-      );
-    }
     if (res.status === 412) {
       throw new ConflictError("Cet élément a été modifié ailleurs entre-temps : rechargez la page et recommencez.");
     }
@@ -126,6 +134,11 @@ export class VaultClient {
     }
     if (!res.ok) {
       const e = (await res.json().catch(() => ({}))) as { error?: string };
+      if (res.status === 403 && path === "/api/v1/init" && e.error?.includes("X-Install-Token")) {
+        throw new InstallTokenError(
+          "Jeton d'installation manquant ou incorrect. Il figure dans le journal du serveur au premier démarrage.",
+        );
+      }
       if (res.status === 403 && e.error?.includes("TOTP")) {
         throw new Error(
           e.error === "TOTP code required" ? "Code de double authentification requis." : "Code incorrect.",

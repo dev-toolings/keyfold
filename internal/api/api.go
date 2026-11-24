@@ -83,6 +83,7 @@ type server struct {
 
 	initMu       sync.Mutex // guards vault creation and the install token
 	installToken string
+	initStore    func(identity []byte, recipient string) error // replaced by tests
 
 	mu          sync.Mutex
 	challenges  map[string]challenge
@@ -123,6 +124,7 @@ func New(st *store.Store, o Options) http.Handler {
 func newServer(st *store.Store) *server {
 	s := &server{
 		store: st, maxBlob: DefaultMaxBlob, now: time.Now, started: time.Now(),
+		initStore:  st.Init,
 		challenges: map[string]challenge{}, sessions: map[string]time.Time{}, clients: map[string]*clientState{},
 	}
 	if !st.Initialized() {
@@ -280,9 +282,13 @@ func fail(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]string{"error": msg})
 }
 
-// internalError logs err (paths and OS errors only, never content).
-func internalError(w http.ResponseWriter, err error) {
+// logInternalError logs err (paths and OS errors only, never content).
+func logInternalError(w http.ResponseWriter, err error) {
 	slog.Error("internal error", "err", err, "requestId", w.Header().Get("X-Request-Id"))
+}
+
+func internalError(w http.ResponseWriter, err error) {
+	logInternalError(w, err)
 	fail(w, http.StatusInternalServerError, "internal error")
 }
 
@@ -335,15 +341,15 @@ func (s *server) initVault(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "recipient is not an X25519 age recipient")
 		return
 	}
-	err := s.store.Init(req.Identity, req.Recipient)
-	// A directory sync can fail after the identity has been written.
-	if err == nil || s.store.Initialized() {
-		s.installToken = ""
+	if err := s.initStore(req.Identity, req.Recipient); err != nil {
+		// A directory sync can fail after the identity has been written.
+		if !s.store.Initialized() {
+			internalError(w, err)
+			return
+		}
+		logInternalError(w, err)
 	}
-	if err != nil {
-		internalError(w, err)
-		return
-	}
+	s.installToken = ""
 	writeJSON(w, http.StatusCreated, map[string]bool{"initialized": true})
 }
 

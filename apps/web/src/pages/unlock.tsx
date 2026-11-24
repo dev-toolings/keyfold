@@ -81,10 +81,11 @@ function PasswordForm({ first, totp, onDone }: { first: boolean; totp: boolean; 
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [installToken, setInstallToken] = useState("");
+  const [installTokenRefused, setInstallTokenRefused] = useState(false);
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const needsInstallToken = first && !["localhost", "127.0.0.1", "[::1]", "::1"].includes(window.location.hostname);
+  const showInstallToken = first && (installTokenRefused || !vault.isLoopbackHost(window.location.hostname));
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -98,6 +99,7 @@ function PasswordForm({ first, totp, onDone }: { first: boolean; totp: boolean; 
       await (first ? vault.create(password, installToken.trim()) : vault.unlock(password, code.trim()));
       onDone();
     } catch (err) {
+      if (err instanceof vault.InstallTokenError) setInstallTokenRefused(true);
       setError(errorMessage(err));
       setBusy(false);
     }
@@ -140,7 +142,7 @@ function PasswordForm({ first, totp, onDone }: { first: boolean; totp: boolean; 
               />
             </div>
           )}
-          {needsInstallToken && (
+          {showInstallToken && (
             <div className="flex flex-col gap-2">
               <Label htmlFor="install-token">Jeton d'installation</Label>
               <Input
@@ -148,7 +150,6 @@ function PasswordForm({ first, totp, onDone }: { first: boolean; totp: boolean; 
                 type="password"
                 autoComplete="off"
                 aria-describedby="install-token-help"
-                required
                 value={installToken}
                 onChange={(e) => setInstallToken(e.target.value)}
               />

@@ -118,11 +118,14 @@ func TestNonLocalInitRequiresInstallToken(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("init without a token: got %d, want 403", w.Code)
 	}
-	var reply struct{ Error string }
+	var reply map[string]string
 	if err := json.Unmarshal(w.Body.Bytes(), &reply); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(reply.Error, "X-Install-Token") || !strings.Contains(reply.Error, "server log") {
+	if len(reply) != 1 {
+		t.Error("the response must contain only the error field")
+	}
+	if !strings.Contains(reply["error"], "X-Install-Token") || !strings.Contains(reply["error"], "server log") {
 		t.Error("the error must point to the header and the server log")
 	}
 	if st.Initialized() {
@@ -161,6 +164,58 @@ func TestInstallTokenCreatesVaultOnce(t *testing.T) {
 	}
 	if id.String() != owner.String() || recipient != owner.Recipient().String() {
 		t.Fatal("the vault identity or recipient does not belong to the first caller")
+	}
+}
+
+func TestInitWithDirectorySyncError(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newServer(st)
+	h := s.handler()
+	token := s.installToken
+	syncErr := &os.PathError{Op: "sync", Path: dir, Err: fs.ErrPermission}
+
+	s.initStore = func([]byte, string) error { return syncErr }
+	r, _ := initTestRequest(t, "192.0.2.1", token)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusInternalServerError || st.Initialized() || s.installToken != token {
+		t.Fatalf("init error before identity write: got %d, want 500 with the vault uninitialized and the token retained", w.Code)
+	}
+
+	s.initStore = func(identity []byte, recipient string) error {
+		if err := st.Init(identity, recipient); err != nil {
+			return err
+		}
+		return syncErr
+	}
+	var log bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(logger.New("production", &log))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	r, owner := initTestRequest(t, "192.0.2.1", token)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusCreated || !st.Initialized() || s.installToken != "" {
+		t.Fatalf("init error after identity write: got %d, want 201 with the vault initialized and the token consumed", w.Code)
+	}
+	if !strings.Contains(log.String(), `"msg":"internal error"`) || !strings.Contains(log.String(), syncErr.Error()) {
+		t.Fatal("the directory sync failure was not logged as an internal error")
+	}
+	wrapped, recipient, err := st.Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := vault.UnwrapIdentity(wrapped, "fake-install-master-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id.String() != owner.String() || recipient != owner.Recipient().String() {
+		t.Fatal("the vault identity or recipient does not belong to the successful caller")
 	}
 }
 
