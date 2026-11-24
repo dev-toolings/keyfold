@@ -219,7 +219,7 @@ func TestUnreadableItemDoesNotHideTheOthers(t *testing.T) {
 	}{
 		"list_items":    {map[string]any{}, false, `"unreadable":["` + damaged + `"]`},
 		"vault_health":  {map[string]any{}, false, `"unreadable":["` + damaged + `"]`},
-		"generate_item": {map[string]any{"name": "fake-generated"}, true, "whole vault"},
+		"generate_item": {map[string]any{"name": "fake-generated"}, true, "cannot be read (" + damaged + ")"},
 	} {
 		res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: tool, Arguments: c.arguments})
 		if err != nil {

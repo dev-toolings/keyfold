@@ -307,7 +307,9 @@ func (c *client) whole() error {
 	if len(c.unreadable) == 0 {
 		return nil
 	}
-	return errors.New("this needs the whole vault: restore the items that cannot be read from a backup, or delete their files in items/ on the server")
+	// The ids are in the error itself: an MCP caller sees nothing else.
+	return fmt.Errorf("this needs the whole vault, and %d item(s) cannot be read (%s): restore them from a backup, or delete their files in items/ on the server",
+		len(c.unreadable), strings.Join(c.unreadable, ", "))
 }
 
 func find(entries []entry, name string) (entry, bool) {
