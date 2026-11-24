@@ -1,0 +1,32 @@
+[Unit]
+Description=Back up the Keyfold vault
+After=keyfold.service
+
+[Service]
+Type=oneshot
+# Use the same dynamic user and expose the vault state inside this unit.
+DynamicUser=yes
+User=keyfold
+StateDirectory=keyfold keyfold-backups
+StateDirectoryMode=0700
+ReadOnlyPaths=/var/lib/keyfold
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/local/bin/keyfold-backup
+UMask=0077
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
