@@ -947,14 +947,14 @@ func TestItemBodyStillLimited(t *testing.T) {
 
 func TestAliveWithoutSession(t *testing.T) {
 	w := httptest.NewRecorder()
-	New(nil, Options{}).ServeHTTP(w, clientRequest(http.MethodGet, "/api/v1/alive", ""))
+	New(newInitTestStore(t), Options{}).ServeHTTP(w, clientRequest(http.MethodGet, "/api/v1/alive", ""))
 	if w.Code != http.StatusOK || w.Body.String() != `{"alive":true}` {
 		t.Fatalf("alive: got %d %q, want 200 and the exact liveness response", w.Code, w.Body)
 	}
 }
 
 func TestAliveRejectsNonLocalRequests(t *testing.T) {
-	s := newServer(nil)
+	s := newServer(newInitTestStore(t))
 	s.hosts = []string{"vault.example"}
 	handler := s.handler()
 	for _, c := range []struct {
@@ -983,7 +983,7 @@ func TestAliveRejectsNonLocalRequests(t *testing.T) {
 }
 
 func TestAliveDoesNotUseClientBudget(t *testing.T) {
-	s := newServer(nil)
+	s := newServer(newInitTestStore(t))
 	handler := s.handler()
 	for i := range maxCallsPerMinute + 1 {
 		w := httptest.NewRecorder()
