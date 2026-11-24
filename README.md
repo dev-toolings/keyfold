@@ -240,7 +240,25 @@ claude mcp add keyfold -- "$PWD/bin/kf" mcp
 
 - TLS: the server speaks plain HTTP and must stay on `127.0.0.1`.
 - Hosting: no service unit, container or reverse proxy setup.
-- Backups of the data directory.
+- Scheduled backups and a copy off the machine: `-backup` below is run by hand.
+
+## Backup and restore
+
+```sh
+keyfold-server -data ./data -backup vault.tar     # every file of the vault, attachments included
+keyfold-server -data ./new -restore vault.tar     # recreates the directory
+```
+
+`-backup` works while the server runs: a file is replaced by a rename, never
+written in place, so each archived file is whole. It writes a new `0600` file
+and refuses to overwrite one. `-restore` needs a missing or empty directory: it
+never writes over a vault, and a failed restore leaves nothing behind.
+
+The archive holds what the data directory holds: items and attachments stay
+encrypted with age and it asks no master password, but `totp.json` is in clear
+(see [Second factor](#second-factor-totp)). Protect it like the directory itself.
+
+`kf export` is not a backup: it leaves attachments out.
 
 ## Credits
 

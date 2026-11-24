@@ -19,8 +19,27 @@ func main() {
 	web := flag.String("web", "", "directory of the built web UI to serve (optional)")
 	maxBlob := flag.Int64("max-blob", api.DefaultMaxBlob, "largest attachment accepted, in bytes")
 	disableTOTP := flag.Bool("disable-totp", false, "turn the second factor off and exit (recovery, needs disk access)")
+	backup := flag.String("backup", "", "write the whole data directory to this new archive `file` and exit (a server may be running)")
+	restore := flag.String("restore", "", "recreate the data directory from a -backup archive `file` and exit (the directory must be missing or empty)")
 	flag.Parse()
 	slog.SetDefault(logger.New(os.Getenv("KEYFOLD_ENV"), os.Stdout))
+
+	if *backup != "" {
+		if err := backupTo(*data, *backup); err != nil {
+			slog.Error("backup", "err", err)
+			os.Exit(1)
+		}
+		slog.Info("backup written", "data", *data, "file", *backup)
+		return
+	}
+	if *restore != "" {
+		if err := restoreFrom(*data, *restore); err != nil {
+			slog.Error("restore", "err", err)
+			os.Exit(1)
+		}
+		slog.Info("vault restored", "data", *data, "file", *restore)
+		return
+	}
 
 	st, err := store.Open(*data)
 	if err != nil {
@@ -51,6 +70,37 @@ func main() {
 	slog.Info("keyfold-server listening", "url", "http://"+*listen, "data", *data)
 	slog.Error("server stopped", "err", http.ListenAndServe(*listen, mux))
 	os.Exit(1)
+}
+
+// backupTo archives the data directory into a new 0600 file. It never writes
+// over a file, and leaves none behind when the backup fails.
+func backupTo(dir, file string) (err error) {
+	f, err := os.OpenFile(file, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			f.Close()
+			os.Remove(file)
+		}
+	}()
+	if err := store.Backup(dir, f); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	return f.Close()
+}
+
+func restoreFrom(dir, file string) error {
+	f, err := os.Open(file)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return store.Restore(dir, f)
 }
 
 // spa serves the built UI and answers index.html for paths that are not

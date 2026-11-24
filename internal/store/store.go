@@ -2,6 +2,7 @@
 package store
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -77,7 +78,7 @@ func Open(dir string) (*Store, error) {
 	data, err := os.ReadFile(path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
-		if err := writeAtomic(path, []byte(strconv.Itoa(Layout)+"\n")); err != nil {
+		if err := writeAtomic(path, strings.NewReader(strconv.Itoa(Layout)+"\n")); err != nil {
 			return nil, err
 		}
 	case err != nil:
@@ -138,16 +139,16 @@ func (s *Store) Initialized() bool {
 // Init stores the encrypted identity and its recipient. The caller makes
 // sure the vault is not initialized yet.
 func (s *Store) Init(identity []byte, recipient string) error {
-	if err := writeAtomic(filepath.Join(s.dir, recipientFile), []byte(recipient+"\n")); err != nil {
+	if err := writeAtomic(filepath.Join(s.dir, recipientFile), strings.NewReader(recipient+"\n")); err != nil {
 		return err
 	}
-	return writeAtomic(filepath.Join(s.dir, identityFile), identity)
+	return writeAtomic(filepath.Join(s.dir, identityFile), bytes.NewReader(identity))
 }
 
 // SetIdentity replaces the encrypted identity, after a master password change.
 // The recipient does not change: it is the same identity, wrapped anew.
 func (s *Store) SetIdentity(identity []byte) error {
-	return writeAtomic(filepath.Join(s.dir, identityFile), identity)
+	return writeAtomic(filepath.Join(s.dir, identityFile), bytes.NewReader(identity))
 }
 
 // TOTP is the second factor state. The secret is stored in clear: the server
@@ -176,7 +177,7 @@ func (s *Store) SetTOTP(t TOTP) error {
 	if err != nil {
 		return err
 	}
-	return writeAtomic(filepath.Join(s.dir, totpFile), data)
+	return writeAtomic(filepath.Join(s.dir, totpFile), bytes.NewReader(data))
 }
 
 // ClearTOTP removes the second factor. Removing a missing one is not an error.
@@ -242,7 +243,7 @@ func (s *Store) Put(id string, ciphertext []byte, ifMatch string) error {
 			return ErrConflict
 		}
 	}
-	return writeAtomic(s.itemPath(id), ciphertext)
+	return writeAtomic(s.itemPath(id), bytes.NewReader(ciphertext))
 }
 
 // Delete removes an item. id must be valid. Deleting a missing item returns
@@ -272,26 +273,7 @@ func (s *Store) PutBlob(id string, r io.Reader) error {
 	if !ValidID(id) {
 		return errors.New("invalid blob id")
 	}
-	f, err := os.CreateTemp(filepath.Join(s.dir, blobsDir), tmpPattern)
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name()) // no-op after a successful rename
-	if _, err := io.Copy(f, r); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(f.Name(), s.blobPath(id)); err != nil {
-		return err
-	}
-	return syncDir(filepath.Join(s.dir, blobsDir))
+	return writeAtomic(s.blobPath(id), r)
 }
 
 // Blob opens an encrypted attachment. A missing one returns an error matching
@@ -356,20 +338,17 @@ func (s *Store) itemPath(id string) string {
 	return filepath.Join(s.dir, itemsDir, id+".age")
 }
 
-// writeAtomic writes data to a 0600 temp file in the target directory, renames
-// it over path, then flushes the directory.
-func writeAtomic(path string, data []byte) error {
+// writeAtomic streams r to a 0600 temp file in the target directory, renames
+// it over path, then flushes the directory. Nothing is stored if r fails
+// before its end.
+func writeAtomic(path string, r io.Reader) error {
 	f, err := os.CreateTemp(filepath.Dir(path), tmpPattern)
 	if err != nil {
 		return err
 	}
 	tmp := f.Name()
 	defer os.Remove(tmp) // no-op after a successful rename
-	if err := f.Chmod(0o600); err != nil {
-		f.Close()
-		return err
-	}
-	if _, err := f.Write(data); err != nil {
+	if _, err := io.Copy(f, r); err != nil {
 		f.Close()
 		return err
 	}

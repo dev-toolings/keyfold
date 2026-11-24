@@ -1,6 +1,7 @@
 package store
 
 import (
+	"archive/tar"
 	"bytes"
 	"errors"
 	"io"
@@ -178,5 +179,178 @@ func TestLayoutVersion(t *testing.T) {
 	}
 	if _, err := Open(dir); err == nil || !strings.Contains(err.Error(), "layout version 2") || !strings.Contains(err.Error(), "up to 1") {
 		t.Errorf("Open of a newer layout: %v, want a refusal naming both versions", err)
+	}
+}
+
+// vaultWithContent returns a store holding an identity, a TOTP secret, two
+// items and one attachment, plus what a killed writer and a lock leave behind.
+func vaultWithContent(t *testing.T) (*Store, string) {
+	t.Helper()
+	st, dir := open(t)
+	if err := st.Init([]byte("fake-identity"), "age1fake"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetTOTP(TOTP{Secret: "FAKESECRET", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	for id, ct := range map[string]string{idA: "fake-ciphertext-a", idB: "fake-ciphertext-b"} {
+		if err := st.Put(id, []byte(ct), ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.PutBlob(idA, strings.NewReader("fake-attachment")); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Lock(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "items", ".tmp-123"), []byte("half written"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return st, dir
+}
+
+func TestBackupThenRestoreGivesTheSameVault(t *testing.T) {
+	st, dir := vaultWithContent(t)
+	var archive bytes.Buffer
+	if err := Backup(dir, &archive); err != nil {
+		t.Fatal(err)
+	}
+	restored := filepath.Join(t.TempDir(), "restored")
+	if err := Restore(restored, &archive); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Open(restored)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wantItems, _ := st.Items()
+	gotItems, err := got.Items()
+	if err != nil || len(gotItems) != 2 {
+		t.Fatalf("restored Items() = %d items, %v", len(gotItems), err)
+	}
+	for i := range wantItems {
+		if gotItems[i].ID != wantItems[i].ID || gotItems[i].ETag != wantItems[i].ETag || !bytes.Equal(gotItems[i].Ciphertext, wantItems[i].Ciphertext) {
+			t.Errorf("item %d: got %+v, want %+v", i, gotItems[i], wantItems[i])
+		}
+	}
+	f, err := got.Blob(idA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob, _ := io.ReadAll(f)
+	f.Close()
+	if string(blob) != "fake-attachment" {
+		t.Errorf("restored attachment = %q", blob)
+	}
+	if totp, err := got.TOTP(); err != nil || totp != (TOTP{Secret: "FAKESECRET", Enabled: true}) {
+		t.Errorf("restored TOTP = %+v, %v", totp, err)
+	}
+	if id, rcpt, err := got.Identity(); err != nil || string(id) != "fake-identity" || rcpt != "age1fake" {
+		t.Errorf("restored identity = %q, %q, %v", id, rcpt, err)
+	}
+
+	var files []string
+	filepath.WalkDir(restored, func(path string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			rel, _ := filepath.Rel(restored, path)
+			files = append(files, rel)
+			if info, _ := d.Info(); info.Mode().Perm() != 0o600 {
+				t.Errorf("%s restored with mode %v, want 0600", rel, info.Mode().Perm())
+			}
+		}
+		return nil
+	})
+	want := []string{"blobs/" + idA + ".age", "identity.age", "items/" + idA + ".age", "items/" + idB + ".age", "recipient.txt", "totp.json", "version"}
+	if strings.Join(files, " ") != strings.Join(want, " ") {
+		t.Errorf("restored files = %v, want %v (no temp file, no lock)", files, want)
+	}
+}
+
+func TestRestoreNeverWritesOverAVault(t *testing.T) {
+	_, dir := vaultWithContent(t)
+	var archive bytes.Buffer
+	if err := Backup(dir, &archive); err != nil {
+		t.Fatal(err)
+	}
+	other, otherDir := open(t)
+	if err := other.Put(idB, []byte("kept"), ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := Restore(otherDir, &archive); err == nil {
+		t.Fatal("Restore wrote into a directory that is not empty")
+	}
+	if items, _ := other.Items(); len(items) != 1 || string(items[0].Ciphertext) != "kept" {
+		t.Errorf("the existing vault changed: %+v", items)
+	}
+}
+
+func TestRestoreRefusesAForeignArchive(t *testing.T) {
+	for name, entry := range map[string]string{"path leaving the directory": "../evil", "unknown file": "items/notes.txt"} {
+		var archive bytes.Buffer
+		tw := tar.NewWriter(&archive)
+		for _, n := range []string{"identity.age", entry} {
+			tw.WriteHeader(&tar.Header{Name: n, Mode: 0o600, Size: 4})
+			tw.Write([]byte("fake"))
+		}
+		tw.Close()
+
+		parent := t.TempDir()
+		if err := Restore(filepath.Join(parent, "data"), &archive); err == nil {
+			t.Errorf("%s: Restore accepted the archive", name)
+		}
+		if left, _ := os.ReadDir(parent); len(left) != 0 {
+			t.Errorf("%s: a failed restore left %v behind", name, left)
+		}
+	}
+}
+
+func TestBackupNextToAWriterHoldsWholeFilesOnly(t *testing.T) {
+	st, dir := vaultWithContent(t)
+	versions := [][]byte{bytes.Repeat([]byte("a"), 1<<20), bytes.Repeat([]byte("b"), 1<<20)}
+	stop, done := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+				st.Put(idA, versions[i%2], "")
+			}
+		}
+	}()
+	for range 20 {
+		var archive bytes.Buffer
+		if err := Backup(dir, &archive); err != nil {
+			t.Fatal(err)
+		}
+		tr := tar.NewReader(&archive)
+		for {
+			h, err := tr.Next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if h.Name != "items/"+idA+".age" {
+				continue
+			}
+			got, _ := io.ReadAll(tr)
+			if !bytes.Equal(got, versions[0]) && !bytes.Equal(got, versions[1]) && string(got) != "fake-ciphertext-a" {
+				t.Fatalf("the archived item is none of the versions written: %d bytes", len(got))
+			}
+		}
+	}
+	close(stop)
+	<-done
+}
+
+func TestBackupNeedsAVault(t *testing.T) {
+	_, dir := open(t)
+	if err := Backup(dir, io.Discard); err == nil {
+		t.Error("Backup archived a directory that holds no vault")
 	}
 }
