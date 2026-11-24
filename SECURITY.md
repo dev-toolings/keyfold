@@ -23,13 +23,15 @@ The Go server, `kf` CLI, `kf mcp` server, and React web UI are in scope,
 including the encryption and session behavior described in the README's
 [Security model](README.md#security-model). This covers client-side age
 encryption, the vault identity wrapped with the master password, and
-in-memory sessions established by decrypting a challenge.
+in-memory sessions established by decrypting a challenge. Any flaw that exposes
+vault contents, names, or attachments from stored files without the master
+password is in scope.
 
 ### Out of scope
 
 - An already compromised machine or an attacker with access to an unlocked
   session.
-- A stolen disk. The server stores the TOTP secret in cleartext in
-  `data/totp.json`. TOTP does not protect a stolen disk.
-- Weak master passwords.
+- TOTP's lack of protection for a stolen disk or a copy of the data directory.
+  The server stores the TOTP secret in cleartext in `data/totp.json` by design.
+- Offline guessing of a weak master password against a stolen identity file.
 - Content on the public product site.
