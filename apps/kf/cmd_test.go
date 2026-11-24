@@ -2,10 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"keyfold/internal/vault"
 )
@@ -144,6 +148,92 @@ func TestUnreadableItemDoesNotHideTheOthers(t *testing.T) {
 	if code != 0 || stdout != "fake-pw-123\n" || !strings.Contains(stderr, "cannot be read") {
 		t.Errorf("read: exit %d, stdout %q, stderr %q", code, stdout, stderr)
 	}
+	if code, _, _ := kf("migrate"); code != 3 {
+		t.Errorf("migrate: exit %d, want 3", code)
+	}
+	// run hands out the readable secret and keeps the code of its command.
+	if code, _, stderr := kf("run", "-env", "FAKE_PW=kf://fake-db/value", "--", "sh", "-c", `[ "$FAKE_PW" = fake-pw-123 ] && exit 7`); code != 7 || !strings.Contains(stderr, damaged) {
+		t.Errorf("run: exit %d, stderr %q; want the command's code 7 and the warning", code, stderr)
+	}
+
+	// The name of the damaged item is unknown: nothing may take a name for
+	// free, and no file may pass for the whole vault.
+	count := func() int {
+		items, err := st.Items()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(items)
+	}
+	before := count()
+	export := filepath.Join(t.TempDir(), "export.json")
+	if err := os.WriteFile(export, []byte("an earlier, whole export"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, stderr := kf("export", "-plaintext", "-o", export); code != 1 || !strings.Contains(stderr, "whole vault") {
+		t.Errorf("export: exit %d, stderr %q", code, stderr)
+	}
+	if got, _ := os.ReadFile(export); string(got) != "an earlier, whole export" {
+		t.Errorf("a refused export wrote over the earlier file: %q", got)
+	}
+	toImport := filepath.Join(t.TempDir(), "import.json")
+	if err := os.WriteFile(toImport, []byte(`[{"v":2,"name":"fake-new","kind":"login","value":"fake-pw-456"}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, stderr := kf("import", "-format", "keyfold", toImport); code != 1 || !strings.Contains(stderr, "whole vault") {
+		t.Errorf("import: exit %d, stderr %q", code, stderr)
+	}
+	set := func(name string) int {
+		var stderr bytes.Buffer
+		return run([]string{"-server", url, "set", name}, fileWith(t, "fake-pw-789\n"), fileWith(t, ""), &stderr)
+	}
+	if code := set("fake-other"); code != 1 {
+		t.Errorf("set on a new name: exit %d, want 1", code)
+	}
+	if after := count(); after != before {
+		t.Errorf("items in the store: %d, want %d: a refused command created one", after, before)
+	}
+	// A readable item can still be changed.
+	if code := set("fake-db"); code != 0 {
+		t.Errorf("set on an existing name: exit %d, want 0", code)
+	}
+	if code, stdout, _ := kf("read", "kf://fake-db/value"); code != 0 || stdout != "fake-pw-789\n" {
+		t.Errorf("read after set: exit %d, stdout %q", code, stdout)
+	}
+
+	// The MCP tools say what they leave out, and refuse to create.
+	ctx := context.Background()
+	serverSide, clientSide := mcp.NewInMemoryTransports()
+	if _, err := newMCPServer(url).Connect(ctx, serverSide, nil); err != nil {
+		t.Fatal(err)
+	}
+	session, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0"}, nil).Connect(ctx, clientSide, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	for tool, c := range map[string]struct {
+		arguments map[string]any
+		isError   bool
+		want      string
+	}{
+		"list_items":    {map[string]any{}, false, `"unreadable":["` + damaged + `"]`},
+		"vault_health":  {map[string]any{}, false, `"unreadable":["` + damaged + `"]`},
+		"generate_item": {map[string]any{"name": "fake-generated"}, true, "whole vault"},
+	} {
+		res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: tool, Arguments: c.arguments})
+		if err != nil {
+			t.Fatalf("%s: %v", tool, err)
+		}
+		raw, _ := json.Marshal(res)
+		if res.IsError != c.isError || !strings.Contains(string(raw), c.want) {
+			t.Errorf("%s: error = %v, result %s", tool, res.IsError, raw)
+		}
+	}
+	if after := count(); after != before {
+		t.Errorf("items in the store: %d, want %d: generate_item created one", after, before)
+	}
+
 	// Without the damaged item, no warning and the usual exit code.
 	if err := st.Delete(damaged, ""); err != nil {
 		t.Fatal(err)

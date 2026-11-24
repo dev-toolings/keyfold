@@ -119,8 +119,11 @@ The server URL comes from `-server`, then `KEYFOLD_SERVER`, then
 
 An item that cannot be decrypted (a damaged file, or a format this `kf` does
 not know) is skipped: a warning on stderr gives its id, and every other item
-stays usable. `list`, `export`, `import` and `migrate` then exit with code 3,
-since they worked on a part of the vault only.
+can still be read, changed and deleted. `list` and `migrate` then exit with
+code 3, since they worked on a part of the vault only. Its name is unknown, so
+what needs the whole vault is refused until the item is restored from a backup
+or its file deleted on the server: creating an item (`set` on a new name,
+`import`, the MCP `generate_item`) and `export`.
 
 Example: start a program with its database password, without a `.env` file:
 
@@ -213,7 +216,8 @@ password.
   encrypted locally. It refuses a name that already exists.
 - `vault_health`: the server facts of `/personal/health` and the dashboard
   indicators (stale, reused, short, weak, website without TOTP) as item names.
-  `unreadable` lists the ids of the items that could not be decrypted.
+  `unreadable` lists the ids of the items that could not be decrypted, as
+  `list_items` does.
   The rules are in `internal/vault/health.go`, the same as the web
   (`packages/vault-core/src/stats.ts`): `internal/vault/testdata/health.json`
   holds cases both test suites check.

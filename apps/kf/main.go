@@ -148,14 +148,14 @@ func run(args []string, stdin, stdout *os.File, stderr io.Writer) int {
 	}
 	// A command whose result stands for the whole vault did its work, on a
 	// part of it only.
-	if len(c.unreadable) > 0 && slices.Contains([]string{"list", "export", "import", "migrate"}, cmd) {
+	if len(c.unreadable) > 0 && (cmd == "list" || cmd == "migrate") {
 		return exitPartial
 	}
 	return code
 }
 
-// exitPartial is the exit code of list, export, import and migrate when they
-// worked on the readable items only.
+// exitPartial is the exit code of list and migrate when they worked on the
+// readable items only.
 const exitPartial = 3
 
 // client talks to the server API.
@@ -298,6 +298,16 @@ func (c *client) open() (*age.X25519Identity, []entry, error) {
 		entries = append(entries, entry{id: r.ID, etag: r.ETag, item: it})
 	}
 	return id, entries, nil
+}
+
+// whole returns an error when open skipped items. Their names are unknown, so
+// a command that takes a name for free could make a second item of that name,
+// and one that writes the vault to a file would leave them out.
+func (c *client) whole() error {
+	if len(c.unreadable) == 0 {
+		return nil
+	}
+	return errors.New("this needs the whole vault: restore the items that cannot be read from a backup, or delete their files in items/ on the server")
 }
 
 func find(entries []entry, name string) (entry, bool) {
@@ -540,6 +550,9 @@ func cmdSet(c *client, args []string, stdin *os.File, stderr io.Writer) error {
 		e.item, _ = vault.Upgrade(e.item)
 		e.item.CreatedAt = cmp.Or(e.item.CreatedAt, e.item.UpdatedAt)
 	} else {
+		if err := c.whole(); err != nil { // the name may be the one of an item that cannot be read
+			return err
+		}
 		e = newEntry()
 		e.item = vault.Item{V: vault.ItemVersion, Name: name, Kind: "login", CreatedAt: now}
 	}
