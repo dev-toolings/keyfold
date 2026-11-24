@@ -120,7 +120,7 @@ function PasswordForm({
           ? "Ouvrez Keyfold sur la machine qui héberge le serveur, activez la double authentification dans les paramètres, puis revenez sur cette page pour réessayer."
           : message,
       );
-      if (!first) await refreshStatus();
+      await refreshStatus();
       setBusy(false);
     }
   }
