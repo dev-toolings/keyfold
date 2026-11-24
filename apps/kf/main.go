@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"slices"
@@ -26,6 +27,7 @@ import (
 	"golang.org/x/term"
 
 	"keyfold/internal/agent"
+	"keyfold/internal/hosts"
 	"keyfold/internal/store"
 	"keyfold/internal/vault"
 )
@@ -81,6 +83,12 @@ func run(args []string, stdin, stdout *os.File, stderr io.Writer) int {
 	server := fs.String("server", defaultServer, "server URL")
 	if err := fs.Parse(args); err != nil || fs.NArg() == 0 {
 		fs.Usage()
+		return 2
+	}
+	// The session token and the TOTP code travel in headers: never in clear
+	// over a network.
+	if u, err := url.Parse(*server); err != nil || (u.Scheme != "https" && (u.Scheme != "http" || !hosts.Loopback(strings.ToLower(u.Hostname())))) {
+		fmt.Fprintf(stderr, "kf: server %s: use an https:// URL, plain http is only accepted for a loopback address\n", *server)
 		return 2
 	}
 	c := &client{base: strings.TrimRight(*server, "/")}
@@ -148,6 +156,10 @@ func run(args []string, stdin, stdout *os.File, stderr io.Writer) int {
 	return 0
 }
 
+// httpClient bounds every call, so a silent server fails the command instead
+// of hanging it.
+var httpClient = &http.Client{Timeout: 30 * time.Second}
+
 // client talks to the server API.
 type client struct {
 	base  string
@@ -185,7 +197,7 @@ func (c *client) doWith(method, path string, hdr http.Header, in, out any) error
 	if c.totp != "" {
 		req.Header.Set("X-TOTP-Code", c.totp)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("server unreachable at %s", c.base)
 	}

@@ -168,3 +168,23 @@ func TestMigrateThenSetKeepsFields(t *testing.T) {
 		t.Fatalf("after set with flags: %+v", it)
 	}
 }
+
+func TestPlainHTTPIsOnlyAcceptedForLoopback(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir()) // no agent: lock needs neither one nor the server
+	for server, refused := range map[string]bool{
+		"http://192.0.2.10:8717":   true,
+		"http://vault.example":     true,
+		"ftp://127.0.0.1":          true,
+		"http://127.0.0.1:8717":    false,
+		"http://localhost:8717":    false,
+		"http://[::1]:8717":        false,
+		"https://vault.example":    false,
+		"https://192.0.2.10:8717/": false,
+	} {
+		var stderr bytes.Buffer
+		code := run([]string{"-server", server, "lock"}, fileWith(t, ""), fileWith(t, ""), &stderr)
+		if got := code == 2 && bytes.Contains(stderr.Bytes(), []byte("https://")); got != refused {
+			t.Errorf("%s: refused = %v, want %v (exit %d, stderr %q)", server, got, refused, code, stderr.String())
+		}
+	}
+}

@@ -101,7 +101,8 @@ go build -o bin/kf ./apps/kf
 ```
 
 The server URL comes from `-server`, then `KEYFOLD_SERVER`, then
-`http://127.0.0.1:8717`.
+`http://127.0.0.1:8717`. A URL that is not a loopback address must start with
+`https://`: `kf` refuses to send a session token in clear over a network.
 
 | Command | What it does |
 |---|---|

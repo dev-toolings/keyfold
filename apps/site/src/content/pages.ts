@@ -286,7 +286,7 @@ const cli: DocPage = {
             { p: "Build the binary from the repository:" },
             { code: "go build -o bin/kf ./apps/kf" },
             {
-              p: "The server URL comes from the `-server` flag, then the `KEYFOLD_SERVER` environment variable, then `http://127.0.0.1:8717`.",
+              p: "The server URL comes from the `-server` flag, then the `KEYFOLD_SERVER` environment variable, then `http://127.0.0.1:8717`. A URL that is not a loopback address must start with `https://`.",
             },
           ],
         },
@@ -391,7 +391,7 @@ const cli: DocPage = {
             { p: "Compilez le binaire depuis le dépôt :" },
             { code: "go build -o bin/kf ./apps/kf" },
             {
-              p: "L'adresse du serveur vient de l'option `-server`, puis de la variable d'environnement `KEYFOLD_SERVER`, puis de `http://127.0.0.1:8717`.",
+              p: "L'adresse du serveur vient de l'option `-server`, puis de la variable d'environnement `KEYFOLD_SERVER`, puis de `http://127.0.0.1:8717`. Une adresse qui n'est pas en boucle locale doit commencer par `https://`.",
             },
           ],
         },
