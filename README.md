@@ -24,7 +24,8 @@ A Go server stores encrypted files only, a Go CLI (`kf`) hands secrets to
 scripts without ever printing them to a terminal, and a React web UI manages
 logins, API tokens, notes and SSH keys. An MCP server lets AI agents list and
 generate secrets without ever seeing a value. All of them share one vault.
-Local use only for now (`127.0.0.1`).
+It listens on `127.0.0.1`; your other devices can reach it through a TLS reverse
+proxy (`-allowed-hosts`), on a network you trust only (see [Not done](#not-done)).
 
 ## Screenshots
 
@@ -75,6 +76,10 @@ go run ./apps/keyfold-server -listen 127.0.0.1:8717 -data ./data -web ./apps/web
 ```
 
 `-web` serves the built UI as static files when the directory exists.
+`-allowed-hosts` (or `KEYFOLD_ALLOWED_HOSTS`) lists the host names accepted
+besides loopback ones, comma separated: the names a TLS reverse proxy in front
+of the server answers to. Any other `Host` gets 403, for the API and the web UI
+alike.
 `make site-build` builds the public product site (`apps/site`: landing pages,
 `llms.txt` and `llms-full.txt`, no vault) as static files into `apps/site/out`;
 `make site-dev` starts its dev server. That is what keyfold.pulseview.app
@@ -97,12 +102,14 @@ go build -o bin/kf ./apps/kf
 ```
 
 The server URL comes from `-server`, then `KEYFOLD_SERVER`, then
-`http://127.0.0.1:8717`.
+`http://127.0.0.1:8717`. A URL that is not a loopback address must start with
+`https://`: `kf` refuses to send a session token in clear over a network, and
+never follows a redirect.
 
 | Command | What it does |
 |---|---|
 | `kf init` | Asks the master password twice (no echo) and creates the vault. |
-| `kf unlock [-ttl 1h]` | Asks the master password, decrypts the identity and starts a background agent on `$XDG_RUNTIME_DIR/keyfold/agent.sock`. |
+| `kf unlock [-ttl 1h]` | Asks the master password, decrypts the identity and starts a background agent on `$XDG_RUNTIME_DIR/keyfold/agent.sock` (without that variable, as on macOS: `keyfold-<uid>/agent.sock` in the temp directory). |
 | `kf lock` | Stops the agent. |
 | `kf get <name>` | Prints the value and a newline to stdout. Refused (exit 1) when stdout is a terminal. |
 | `kf set <name> [-kind K] [-note N]` | Reads the value from stdin (no echo on a terminal; one trailing newline is dropped). Kinds: `login` (default), `token`, `note`, `identity`, `ssh-key`, `ssh-passphrase`. An existing item gets the new value and keeps every field no flag sets; the old value goes to its history (20 values kept). |
@@ -243,13 +250,21 @@ claude mcp add keyfold -- "$PWD/bin/kf" mcp
 - API access needs a session token, obtained by decrypting a random challenge
   with the identity. Tokens and challenges live in server memory only (15 min
   idle expiry), so a server restart locks every client.
+- Every response carries a Content-Security-Policy (own files only, plus the
+  breach check API; no inline script), `X-Frame-Options: DENY`,
+  `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`. API
+  answers are sent with `Cache-Control: no-store`. On a declared host
+  (`-allowed-hosts`), `Strict-Transport-Security` is added.
 - The CLI agent receives the identity through a pipe, never argv or env, and
   serves it on a `0600` socket in a `0700` directory. It exits after its TTL or
   on `kf lock`. The web UI keeps the identity and token in memory only.
 
 ## Not done
 
-- TLS: the server speaks plain HTTP and must stay on `127.0.0.1`.
+- TLS: the server speaks plain HTTP. To reach it from another device, put a TLS
+  reverse proxy in front of it and declare its name with `-allowed-hosts`.
+- Hardening for an untrusted network: creating the vault needs no proof, and
+  five wrong TOTP codes from anyone lock every check. Keep it off the internet.
 - Hosting: no service unit, container or reverse proxy setup.
 - Scheduled backups and a copy off the machine: `-backup` below is run by hand.
 

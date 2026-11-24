@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"slices"
@@ -26,6 +27,7 @@ import (
 	"golang.org/x/term"
 
 	"keyfold/internal/agent"
+	"keyfold/internal/hosts"
 	"keyfold/internal/store"
 	"keyfold/internal/vault"
 )
@@ -154,6 +156,14 @@ func run(args []string, stdin, stdout *os.File, stderr io.Writer) int {
 	return code
 }
 
+// httpClient bounds every call, so a silent server fails the command instead
+// of hanging it. It never follows a redirect: the API sends none, and one to
+// another scheme or host would carry the session token there.
+var httpClient = &http.Client{
+	Timeout:       30 * time.Second,
+	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+}
+
 // exitPartial is the exit code of list and migrate when they worked on the
 // readable items only.
 const exitPartial = 3
@@ -182,6 +192,12 @@ func (c *client) doWith(method, path string, hdr http.Header, in, out any) error
 		}
 		body = bytes.NewReader(b)
 	}
+	// The session token and the TOTP code travel in headers: never in clear
+	// over a network. Checked here, so commands that stay local (lock, the
+	// agent) run whatever the server URL is.
+	if u, err := url.Parse(c.base); err != nil || (u.Scheme != "https" && (u.Scheme != "http" || !hosts.Loopback(hosts.Name(u.Host)))) {
+		return fmt.Errorf("server %s: use an https:// URL, plain http is only accepted for a loopback address", c.base)
+	}
 	req, err := http.NewRequest(method, c.base+path, body)
 	if err != nil {
 		return err
@@ -198,7 +214,7 @@ func (c *client) doWith(method, path string, hdr http.Header, in, out any) error
 	if c.totp != "" {
 		req.Header.Set("X-TOTP-Code", c.totp)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("server unreachable at %s", c.base)
 	}
