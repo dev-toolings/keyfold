@@ -11,13 +11,34 @@ import {
   unwrapIdentity,
   wrapIdentity,
 } from "./crypto";
-import { type BlobRef, type Entry, type Item, upgrade } from "./item";
+import { type BlobRef, type Entry, type Item, isItem, type Listing, upgrade } from "./item";
 
 /** Thrown when the session is gone (lock, idle expiry, server restart). */
 export class LockedError extends Error {}
 
-/** Thrown when an item changed on the server since it was read (HTTP 412). */
+/** Thrown when an item changed since it was read (HTTP 412), or an unseen item holds the requested name. */
 export class ConflictError extends Error {}
+
+/** Rejects any unseen name holder, then uses the page entry for the edited holder or the first holder. */
+export function selectSaveTarget(
+  entries: readonly Entry[],
+  fresh: readonly Entry[],
+  editedId: string | null,
+  name: string,
+): Entry | null {
+  let target: Entry | undefined;
+  for (const holder of fresh) {
+    if (holder.item.name !== name) continue;
+    const entry = entries.find((e) => e.id === holder.id);
+    if (!entry) {
+      throw new ConflictError(
+        "Un élément portant ce nom a été ajouté ou renommé ailleurs entre-temps : rechargez la page et recommencez.",
+      );
+    }
+    if (!target || entry.id === editedId) target = entry;
+  }
+  return target ?? entries.find((e) => e.id === editedId) ?? null;
+}
 
 export type Status = { initialized: boolean; totp: boolean };
 /** GET /api/v1/health: what the server sees, ciphertext only. */
@@ -38,6 +59,31 @@ export type TotpSetup = { secret: string; uri: string; qr: string };
 export const MIN_MASTER_PASSWORD_LENGTH = 16;
 
 type Wrapped = { identity: string; recipient: string };
+
+/** One item as GET /api/v1/items returns it. */
+export type StoredItem = { id: string; etag: string; ciphertext: string };
+
+/**
+ * Decrypts every stored item it can, sorted by name. One that cannot be read
+ * must not hide the others: its id goes to unreadable.
+ */
+export async function decryptEntries(raw: StoredItem[], identity: string): Promise<Listing> {
+  const unreadable: string[] = [];
+  const entries: Entry[] = [];
+  await Promise.all(
+    raw.map(async (r) => {
+      try {
+        const { item, old } = upgrade((await decryptItem(fromBase64(r.ciphertext), identity)) as Item);
+        if (!isItem(item)) throw new Error("not an item");
+        entries.push({ id: r.id, etag: r.etag, item, oldFormat: old });
+      } catch {
+        unreadable.push(r.id);
+      }
+    }),
+  );
+  entries.sort((a, b) => a.item.name.localeCompare(b.item.name));
+  return { entries, unreadable: unreadable.sort() };
+}
 
 export class VaultClient {
   private identity: string | null = null;
@@ -196,16 +242,9 @@ export class VaultClient {
     this.forget();
   }
 
-  async listItems(): Promise<Entry[]> {
-    const raw = await this.api<{ id: string; etag: string; ciphertext: string }[]>("GET", "/api/v1/items");
-    const id = this.identity as string;
-    const entries = await Promise.all(
-      raw.map(async (r) => {
-        const { item, old } = upgrade((await decryptItem(fromBase64(r.ciphertext), id)) as Item);
-        return { id: r.id, etag: r.etag, item, oldFormat: old };
-      }),
-    );
-    return entries.sort((a, b) => a.item.name.localeCompare(b.item.name));
+  async listItems(): Promise<Listing> {
+    const raw = await this.api<StoredItem[]>("GET", "/api/v1/items");
+    return decryptEntries(raw, this.identity as string);
   }
 
   /**

@@ -20,7 +20,7 @@ const RULES: Record<Filter, string> = {
 
 /** Health check: what the server stores, then the vault indicators, then the same check for AI agents. */
 export function HealthPage() {
-  const { entries, flags } = useVault();
+  const { entries, unreadable, flags } = useVault();
   const [server, setServer] = useState<ServerHealth | null>(null);
   const [checkedAt, setCheckedAt] = useState(() => new Date());
   const [error, setError] = useState("");
@@ -74,6 +74,23 @@ export function HealthPage() {
         </Card>
       )}
 
+      {unreadable.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <TriangleExclamationPoint className="size-4" aria-hidden="true" />
+              {plural(unreadable.length, "élément illisible", "éléments illisibles")}
+            </CardTitle>
+            <CardDescription>
+              <code className="font-mono break-all">{unreadable.map((id) => `items/${id}.age`).join(", ")}</code>.
+              Fichier abîmé, ou format plus récent que cette application. Mettez d'abord Keyfold à jour : un format plus
+              récent redevient lisible. Sinon, restaurez une sauvegarde. Supprimer le fichier sur le serveur efface
+              l'élément pour de bon. En attendant, le coffre est en lecture seule.
+            </CardDescription>
+          </CardHeader>
+        </Card>
+      )}
+
       <section className="flex flex-col gap-3">
         <h3 className="text-sm font-medium">Serveur</h3>
         {!server && !error ? (
@@ -96,19 +113,23 @@ export function HealthPage() {
                 value={formatNumber(server.items)}
                 ok={server.items === entries.length}
                 helper={
-                  server.items === entries.length
-                    ? "Tous déchiffrés dans ce navigateur"
-                    : `${formatNumber(entries.length)} chargés ici : un autre client a écrit depuis, rechargez la page`
+                  unreadable.length > 0
+                    ? `${formatNumber(entries.length)} déchiffrés ici, ${plural(unreadable.length, "illisible", "illisibles")} : le détail est en haut de cette page`
+                    : server.items === entries.length
+                      ? "Tous déchiffrés dans ce navigateur"
+                      : `${formatNumber(entries.length)} chargés ici : un autre client a écrit depuis, rechargez la page`
                 }
               />
               <Kpi
                 label="Pièces jointes"
                 value={formatNumber(server.blobs)}
-                ok={server.blobs === referenced}
+                ok={unreadable.length === 0 && server.blobs === referenced}
                 helper={
-                  server.blobs === referenced
-                    ? `${formatSize(server.blob_bytes)} au total, ${formatSize(server.max_blob)} au plus par fichier`
-                    : `${formatSize(server.blob_bytes)} au total, dont ${plural(Math.abs(server.blobs - referenced), "fichier", "fichiers")} sans élément correspondant`
+                  unreadable.length > 0
+                    ? `${formatSize(server.blob_bytes)} au total. Les fichiers sans élément ne peuvent pas être comptés tant qu'un élément est illisible`
+                    : server.blobs === referenced
+                      ? `${formatSize(server.blob_bytes)} au total, ${formatSize(server.max_blob)} au plus par fichier`
+                      : `${formatSize(server.blob_bytes)} au total, dont ${plural(Math.abs(server.blobs - referenced), "fichier", "fichiers")} sans élément correspondant`
                 }
               />
               <Kpi
@@ -151,6 +172,13 @@ export function HealthPage() {
 
       <section className="flex flex-col gap-3">
         <h3 className="text-sm font-medium">Indicateurs du coffre</h3>
+        {unreadable.length > 0 && (
+          <p className="text-sm text-muted-foreground">
+            Calculés sur les éléments lisibles seulement :{" "}
+            {plural(unreadable.length, "élément illisible n'est pas compté", "éléments illisibles ne sont pas comptés")}
+            .
+          </p>
+        )}
         <div className="grid gap-3 md:grid-cols-3 lg:grid-cols-5">
           {FILTERS.map((f) => (
             <Link key={f} to={`/personal/vault?filter=${f}`} className="rounded-xl outline-none focus-visible:ring-2">

@@ -47,6 +47,11 @@ type VaultContext = {
   entries: vault.Entry[];
   /** Items still stored in an older format: `kf migrate -apply` rewrites them. */
   oldFormat: number;
+  /**
+   * Ids of the items that could not be read: they are in no list, and the vault
+   * is read-only while there is one (save, remove and attach fail with an error).
+   */
+  unreadable: string[];
   loading: boolean;
   error: string;
   /** Reference date for every statistic, taken when the entries were loaded. */
@@ -74,6 +79,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const location = useLocation();
   const [entries, setEntries] = useState<vault.Entry[]>([]);
+  const [unreadable, setUnreadable] = useState<string[]>([]);
   const [now, setNow] = useState(() => new Date());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -93,7 +99,9 @@ export function VaultProvider({ children }: { children: ReactNode }) {
   );
 
   const reload = useCallback(async () => {
-    setEntries(await vault.listItems());
+    const listing = await vault.listItems();
+    setEntries(listing.entries);
+    setUnreadable(listing.unreadable);
     setNow(new Date());
   }, []);
 
@@ -102,12 +110,31 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     run(reload).finally(() => setLoading(false));
   }, []);
 
+  // The name and the attachments of an item that cannot be read are unknown:
+  // a write could take its name, or delete a file it still lists. Reading stays
+  // possible; writing waits for the item to be readable again or gone. The
+  // vault is listed anew before each write: another client may have stored
+  // such an item since this page loaded, and a listing that fails proves
+  // nothing. The entries on screen are left alone, with their ETags: a write
+  // over an item changed elsewhere must still be refused as a conflict.
+  const writable = useCallback(async () => {
+    const listing = await vault.listItems();
+    setUnreadable(listing.unreadable);
+    if (listing.unreadable.length > 0) {
+      throw new Error(
+        "Coffre en lecture seule tant qu'un élément est illisible. Le détail est dans l'état du système.",
+      );
+    }
+    return listing.entries;
+  }, []);
+
   const save = useCallback(
     (id: string | null, draft: Draft) =>
       run(async () => {
+        const fresh = await writable();
         // A name is unique: saving under an existing name overwrites that item, like `kf set`.
         const edited = entries.find((e) => e.id === id) ?? null;
-        const target = entries.find((e) => e.item.name === draft.name) ?? edited;
+        const target = vault.selectSaveTarget(entries, fresh, id, draft.name);
         const stamp = new Date().toISOString();
         // The fields the form does not edit (username, URLs...) come from the
         // item being edited, even when its new name overwrites another item.
@@ -141,23 +168,28 @@ export function VaultProvider({ children }: { children: ReactNode }) {
         await reload();
         return saved;
       }),
-    [entries, run, reload],
+    [entries, run, reload, writable],
   );
 
   const remove = useCallback(
     async (id: string) =>
       (await run(async () => {
+        await writable();
         const entry = entries.find((e) => e.id === id);
         if (entry) await vault.deleteItem(entry);
         await reload();
         return true;
       })) ?? false,
-    [entries, run, reload],
+    [entries, run, reload, writable],
   );
 
   const attach = useCallback(
-    (file: File) => run(async () => vault.uploadAttachment(file.name, new Uint8Array(await file.arrayBuffer()))),
-    [run],
+    (file: File) =>
+      run(async () => {
+        await writable();
+        return vault.uploadAttachment(file.name, new Uint8Array(await file.arrayBuffer()));
+      }),
+    [run, writable],
   );
 
   const download = useCallback(
@@ -183,8 +215,8 @@ export function VaultProvider({ children }: { children: ReactNode }) {
   const oldFormat = useMemo(() => entries.filter((e) => e.oldFormat).length, [entries]);
 
   const value = useMemo(
-    () => ({ entries, oldFormat, loading, error, now, flags, save, remove, attach, download, lock }),
-    [entries, oldFormat, loading, error, now, flags, save, remove, attach, download, lock],
+    () => ({ entries, oldFormat, unreadable, loading, error, now, flags, save, remove, attach, download, lock }),
+    [entries, oldFormat, unreadable, loading, error, now, flags, save, remove, attach, download, lock],
   );
   return <Context.Provider value={value}>{children}</Context.Provider>;
 }
