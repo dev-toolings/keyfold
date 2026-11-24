@@ -46,6 +46,14 @@ const (
 	totpPeriod      = 30 // seconds, the RFC 6238 default
 	totpHeader      = "X-TOTP-Code"
 	ageHeader       = "age-encryption.org/v1\n"
+
+	// contentSecurityPolicy is sent with every response. The web UI loads its
+	// own files only; the one outside call is the breach check (HIBP_RANGE_URL
+	// in packages/vault-core/src/hibp.ts). Styles may be inline (chart colors,
+	// React style attributes), scripts may not.
+	contentSecurityPolicy = "default-src 'self'; connect-src 'self' https://api.pwnedpasswords.com; " +
+		"img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; " +
+		"base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
 )
 
 type challenge struct {
@@ -122,7 +130,28 @@ func (s *server) handler() http.Handler {
 		mux.Handle("/api/", http.NotFoundHandler()) // an unknown API path is not a page of the UI
 		mux.Handle("/", s.web)
 	}
-	return logger.Access(s.allowedHost(http.NewCrossOriginProtection().Handler(s.limitBody(mux))))
+	return logger.Access(s.allowedHost(secure(http.NewCrossOriginProtection().Handler(s.limitBody(mux)))))
+}
+
+// secure sets the response headers that keep the web UI, which holds the
+// decrypted vault in memory, out of frames and free of foreign scripts. API
+// answers (ciphertext, session tokens) are never cached. HSTS is sent on a
+// declared host only: a loopback name is served over plain HTTP.
+func secure(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Content-Security-Policy", contentSecurityPolicy)
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "no-referrer")
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			h.Set("Cache-Control", "no-store")
+		}
+		if !hosts.Loopback(hosts.Name(r.Host)) {
+			h.Set("Strict-Transport-Security", "max-age=31536000")
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // limitBody caps request bodies: 1 MiB, or maxBlob for an attachment. It sets

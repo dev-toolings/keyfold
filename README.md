@@ -231,6 +231,11 @@ claude mcp add keyfold -- "$PWD/bin/kf" mcp
 - API access needs a session token, obtained by decrypting a random challenge
   with the identity. Tokens and challenges live in server memory only (15 min
   idle expiry), so a server restart locks every client.
+- Every response carries a Content-Security-Policy (own files only, plus the
+  breach check API; no inline script), `X-Frame-Options: DENY`,
+  `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`. API
+  answers are sent with `Cache-Control: no-store`. On a declared host
+  (`-allowed-hosts`), `Strict-Transport-Security` is added.
 - The CLI agent receives the identity through a pipe, never argv or env, and
   serves it on a `0600` socket in a `0700` directory. It exits after its TTL or
   on `kf lock`. The web UI keeps the identity and token in memory only.
