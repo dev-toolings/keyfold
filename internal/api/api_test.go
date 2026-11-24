@@ -945,6 +945,58 @@ func TestItemBodyStillLimited(t *testing.T) {
 	}
 }
 
+func TestAliveWithoutSession(t *testing.T) {
+	w := httptest.NewRecorder()
+	New(newInitTestStore(t), Options{}).ServeHTTP(w, clientRequest(http.MethodGet, "/api/v1/alive", ""))
+	if w.Code != http.StatusOK || w.Body.String() != `{"alive":true}` {
+		t.Fatalf("alive: got %d %q, want 200 and the exact liveness response", w.Code, w.Body)
+	}
+}
+
+func TestAliveRejectsNonLocalRequests(t *testing.T) {
+	s := newServer(newInitTestStore(t))
+	s.hosts = []string{"vault.example"}
+	handler := s.handler()
+	for _, c := range []struct {
+		name, address, host, peer string
+		status                    int
+		body                      string
+	}{
+		{"forwarded", "192.0.2.1", "localhost", "127.0.0.1:1234", http.StatusNotFound, "{\"error\":\"not found\"}\n"},
+		{"remote peer", "", "localhost", "192.0.2.1:1234", http.StatusNotFound, "{\"error\":\"not found\"}\n"},
+		{"declared host", "", "vault.example", "127.0.0.1:1234", http.StatusNotFound, "{\"error\":\"not found\"}\n"},
+		{"forbidden host", "", "other.example", "127.0.0.1:1234", http.StatusForbidden, "{\"error\":\"forbidden host\"}\n"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := clientRequest(http.MethodGet, "/api/v1/alive", c.address)
+			r.Host, r.RemoteAddr = c.host, c.peer
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, r)
+			if w.Code != c.status || w.Body.String() != c.body {
+				t.Fatalf("alive: got %d %q, want %d %q", w.Code, w.Body, c.status, c.body)
+			}
+		})
+	}
+	if len(s.clients) != 0 {
+		t.Errorf("rejected probes left %d client entries", len(s.clients))
+	}
+}
+
+func TestAliveDoesNotUseClientBudget(t *testing.T) {
+	s := newServer(newInitTestStore(t))
+	handler := s.handler()
+	for i := range maxCallsPerMinute + 1 {
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, clientRequest(http.MethodGet, "/api/v1/alive", ""))
+		if w.Code != http.StatusOK {
+			t.Fatalf("probe %d: got %d, want 200", i+1, w.Code)
+		}
+	}
+	if len(s.clients) != 0 || s.localClient != (clientState{}) {
+		t.Fatalf("probes changed client state: %d remote clients, local state %+v", len(s.clients), s.localClient)
+	}
+}
+
 func TestHealth(t *testing.T) {
 	ts, id, _ := setup(t)
 	if code := call(t, ts, "GET", "/api/v1/health", "", nil, nil); code != http.StatusUnauthorized {

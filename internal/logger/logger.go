@@ -178,6 +178,8 @@ func Access(next http.Handler) http.Handler {
 		level := slog.LevelInfo
 		if sw.status >= 500 {
 			level = slog.LevelError
+		} else if r.Pattern == "GET /api/v1/alive" {
+			level = slog.LevelDebug
 		} else if sw.status >= 400 {
 			level = slog.LevelWarn
 		}

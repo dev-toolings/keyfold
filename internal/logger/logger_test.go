@@ -71,3 +71,32 @@ func TestAccessClient(t *testing.T) {
 		})
 	}
 }
+
+func TestAccessProbeLevel(t *testing.T) {
+	previous := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	var buf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
+	for _, c := range []struct {
+		path   string
+		status int
+		level  string
+	}{
+		{"/api/v1/alive", http.StatusOK, "DEBUG"},
+		{"/api/v1/alive", http.StatusNotFound, "DEBUG"},
+		{"/api/v1/alive", http.StatusInternalServerError, "ERROR"},
+		{"/api/v1/status", http.StatusOK, "INFO"},
+		{"/api/v1/status", http.StatusNotFound, "WARN"},
+	} {
+		buf.Reset()
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET "+c.path, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(c.status)
+		})
+		Access(mux).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, c.path, nil))
+		if !strings.Contains(buf.String(), `"level":"`+c.level+`"`) {
+			t.Errorf("%s %d: want %s level, got %s", c.path, c.status, c.level, &buf)
+		}
+	}
+}
