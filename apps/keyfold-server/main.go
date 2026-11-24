@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -31,8 +32,27 @@ func main() {
 	allowedHosts := flag.String("allowed-hosts", os.Getenv("KEYFOLD_ALLOWED_HOSTS"),
 		"comma separated host names accepted besides loopback ones: the names a TLS reverse proxy answers to (default $KEYFOLD_ALLOWED_HOSTS)")
 	disableTOTP := flag.Bool("disable-totp", false, "turn the second factor off and exit (recovery, needs disk access)")
+	backup := flag.String("backup", "", "write the whole data directory to this new archive `file` and exit (a server may be running)")
+	restore := flag.String("restore", "", "recreate the data directory from a -backup archive `file` and exit (the directory must be missing or empty)")
 	flag.Parse()
 	slog.SetDefault(logger.New(os.Getenv("KEYFOLD_ENV"), os.Stdout))
+
+	if *backup != "" {
+		if err := backupTo(*data, *backup); err != nil {
+			slog.Error("backup", "err", err)
+			os.Exit(1)
+		}
+		slog.Info("backup written", "data", *data, "file", *backup)
+		return
+	}
+	if *restore != "" {
+		if err := restoreFrom(*data, *restore); err != nil {
+			slog.Error("restore", "err", err)
+			os.Exit(1)
+		}
+		slog.Info("vault restored", "data", *data, "file", *restore)
+		return
+	}
 
 	st, err := store.Open(*data)
 	if err != nil {
@@ -46,6 +66,10 @@ func main() {
 		}
 		slog.Info("TOTP disabled", "data", *data)
 		return
+	}
+	if err := st.Lock(); err != nil {
+		slog.Error("lock data dir", "err", err, "data", *data)
+		os.Exit(1)
 	}
 	opts := api.Options{MaxBlob: *maxBlob, Hosts: hostList(*allowedHosts)}
 	if *web != "" {
@@ -97,6 +121,65 @@ func serve(ctx context.Context, h http.Handler, ln net.Listener) error {
 // hostList splits the -allowed-hosts value into lower case host names.
 func hostList(v string) []string {
 	return strings.FieldsFunc(strings.ToLower(v), func(r rune) bool { return r == ',' || r == ' ' })
+}
+
+// backupTo archives the data directory into a new 0600 file. The archive is
+// written under a ".partial" name and renamed once whole and flushed: a backup
+// that fails, or is killed, leaves no file to be taken for a good one, and can
+// be run again. It refuses a name already taken, before the work and again
+// before the rename: a guard against a slip of the operator, not against a
+// file made on purpose in between. A rename, unlike a hard link, works on
+// every file system a backup may go to.
+func backupTo(dir, file string) error {
+	taken := func() error {
+		if _, err := os.Lstat(file); err == nil {
+			return fmt.Errorf("%s exists: a backup never writes over a file", file)
+		}
+		return nil
+	}
+	if err := taken(); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(filepath.Dir(file), filepath.Base(file)+".partial-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name()) // no-op after the rename
+	if err := store.Backup(dir, f); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := taken(); err != nil {
+		return err
+	}
+	if err := os.Rename(f.Name(), file); err != nil {
+		return err
+	}
+	d, err := os.Open(filepath.Dir(file))
+	if err == nil {
+		err = d.Sync()
+		d.Close()
+	}
+	if err != nil {
+		return fmt.Errorf("%s is written, but its directory could not be flushed to disk: %w", file, err)
+	}
+	return nil
+}
+
+func restoreFrom(dir, file string) error {
+	f, err := os.Open(file)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return store.Restore(dir, f)
 }
 
 // spa serves the built UI and answers index.html for paths that are not
