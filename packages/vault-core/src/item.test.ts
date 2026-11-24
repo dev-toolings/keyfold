@@ -1,7 +1,10 @@
 import { expect, test } from "bun:test";
-import { ITEM_VERSION, type Item, isItem, upgrade } from "./item";
+import { generateX25519Identity, identityToRecipient } from "age-encryption";
+import { decryptEntries } from "./client";
+import { encryptBytes, toBase64 } from "./crypto";
+import { ITEM_VERSION, type Item, isItem } from "./item";
 
-test("validates the full item shape, including minimal Go items and upgraded v1 items", () => {
+test("validates the full item shape, including minimal Go items and upgraded v1 items", async () => {
   const minimal = { name: "fake-item", value: "", note: "", created_at: "", updated_at: "" };
   const current = { ...minimal, v: ITEM_VERSION, kind: "login" } satisfies Item;
   const full = {
@@ -32,7 +35,17 @@ test("validates the full item shape, including minimal Go items and upgraded v1 
 
   expect(isItem({ ...full, extra: true })).toBe(true);
   expect(isItem(current)).toBe(true);
-  expect(isItem(upgrade({ ...minimal, kind: "password" }).item)).toBe(true);
+
+  const v1 = { name: "fake-old", kind: "password", value: "fake-value-123", note: "fake-note" };
+  const identity = await generateX25519Identity();
+  const recipient = await identityToRecipient(identity);
+  const ciphertext = toBase64(await encryptBytes(new TextEncoder().encode(JSON.stringify(v1)), recipient));
+  expect(await decryptEntries([{ id: "0a", etag: "etag-0a", ciphertext }], identity)).toEqual({
+    entries: [
+      { id: "0a", etag: "etag-0a", oldFormat: true, item: { ...v1, v: ITEM_VERSION, kind: "login", updated_at: "" } },
+    ],
+    unreadable: [],
+  });
 
   for (const invalid of [
     { v: 1 },

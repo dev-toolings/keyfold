@@ -100,11 +100,18 @@ export function createdAt(item: Item): string {
   return item.created_at || item.updated_at;
 }
 
-/** Returns the item in the current format and whether it was older. Same rule as vault.Upgrade in Go. */
-export function upgrade(raw: Omit<Item, "v" | "kind"> & { v?: number; kind: string }): { item: Item; old: boolean } {
+/**
+ * Upgrades older items before validation by isItem and reports whether they were older.
+ * Missing legacy strings default to empty strings, matching Go's JSON decoder.
+ */
+export function upgrade(
+  raw: Omit<Item, "v" | "kind" | "value" | "note" | "updated_at"> &
+    Partial<Pick<Item, "value" | "note" | "updated_at">> & { v?: number; kind: string },
+) {
   const v = raw.v ?? 1;
   if (v > ITEM_VERSION) throw new Error(`Élément au format v${v}, plus récent que cette application.`);
-  if (v === ITEM_VERSION) return { item: raw as Item, old: false };
-  const kind = (raw.kind === "password" ? "login" : raw.kind) as Kind;
-  return { item: { ...raw, v: ITEM_VERSION, kind }, old: true };
+  if (v === ITEM_VERSION) return { item: raw, old: false };
+  const kind = raw.kind === "password" ? "login" : raw.kind;
+  const { value = "", note = "", updated_at = "" } = raw;
+  return { item: { ...raw, v: ITEM_VERSION, kind, value, note, updated_at }, old: true };
 }
