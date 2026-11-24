@@ -35,12 +35,13 @@ func TestBackupFileIsPrivateAndNeverOverwritten(t *testing.T) {
 		t.Errorf("the restored directory holds no vault: %v", err)
 	}
 
-	// A failed backup leaves no file to be taken for a good one.
+	// A failed backup leaves no file to be taken for a good one, and a
+	// finished one no partial file.
 	empty := filepath.Join(dir, "empty.tar")
 	if err := backupTo(filepath.Join(dir, "no-vault"), empty); err == nil {
 		t.Error("backup of a directory without a vault succeeded")
 	}
-	if _, err := os.Stat(empty); !os.IsNotExist(err) {
-		t.Errorf("a failed backup left %s behind", empty)
+	if left, _ := filepath.Glob(filepath.Join(dir, "*.tar*")); len(left) != 1 || left[0] != file {
+		t.Errorf("archive files in the directory: %v, want %s only", left, file)
 	}
 }

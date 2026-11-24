@@ -173,8 +173,9 @@ Items are JSON in format v2 (`internal/vault/vault.go`, mirrored in
 `packages/vault-core/src/item.ts`): v1 items are still read, shown upgraded,
 and never written; the web UI shows how many remain until `kf migrate -apply`.
 
-The data directory holds its layout version in `version` (1 today): a server
-refuses a directory written by a newer layout. One server serves a directory at
+The data directory holds its layout version in `version` (1 today, written by
+the first server that serves it): a server refuses a directory written by a
+newer layout. One server serves a directory at
 a time: a second one on the same directory exits, and a starting server removes
 the temp files a killed one left behind.
 
@@ -250,9 +251,15 @@ keyfold-server -data ./new -restore vault.tar     # recreates the directory
 ```
 
 `-backup` works while the server runs: a file is replaced by a rename, never
-written in place, so each archived file is whole. It writes a new `0600` file
-and refuses to overwrite one. `-restore` needs a missing or empty directory: it
-never writes over a vault, and a failed restore leaves nothing behind.
+written in place, so each archived file is whole. It is not a snapshot of one
+instant: an attachment removed while it runs can be missing from the archive,
+although the archived item still names it. Stop the server for a backup of one
+instant. The archive is a new `0600` file, never written over an existing one;
+it gets its name once whole, so a backup that fails or is killed leaves only a
+`.partial` file at worst, and can be run again.
+
+`-restore` needs a missing or empty directory: it never writes over a vault. It
+refuses an archive cut short, and a failed restore leaves nothing behind.
 
 The archive holds what the data directory holds: items and attachments stay
 encrypted with age and it asks no master password, but `totp.json` is in clear

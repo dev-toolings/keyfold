@@ -157,21 +157,21 @@ func TestLockRemovesTempFilesOfAKilledWriter(t *testing.T) {
 }
 
 func TestLayoutVersion(t *testing.T) {
-	_, dir := open(t)
+	st, dir := open(t)
 	marker := filepath.Join(dir, "version")
-	if got, err := os.ReadFile(marker); err != nil || string(got) != "1\n" {
-		t.Fatalf("a new directory: version file = %q, %v; want %q", got, err, "1\n")
+	// Only the process holding the lock writes the file: one that opens the
+	// directory next to a running server (-disable-totp) must not.
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Open alone wrote the version file: %v", err)
 	}
-
-	// A directory from before the version file is layout 1 and gets marked.
-	if err := os.Remove(marker); err != nil {
+	if err := st.Lock(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Open(dir); err != nil {
-		t.Fatalf("Open of a directory without a version file: %v", err)
+	if got, err := os.ReadFile(marker); err != nil || string(got) != "1\n" {
+		t.Fatalf("after Lock: version file = %q, %v; want %q", got, err, "1\n")
 	}
-	if got, _ := os.ReadFile(marker); string(got) != "1\n" {
-		t.Errorf("the version file was not written back: %q", got)
+	if _, err := Open(dir); err != nil {
+		t.Errorf("Open of a layout 1 directory: %v", err)
 	}
 
 	if err := os.WriteFile(marker, []byte("2\n"), 0o600); err != nil {
@@ -352,5 +352,86 @@ func TestBackupNeedsAVault(t *testing.T) {
 	_, dir := open(t)
 	if err := Backup(dir, io.Discard); err == nil {
 		t.Error("Backup archived a directory that holds no vault")
+	}
+}
+
+func TestRestoreRefusesAnArchiveCutShort(t *testing.T) {
+	_, dir := vaultWithContent(t)
+	var archive bytes.Buffer
+	if err := Backup(dir, &archive); err != nil {
+		t.Fatal(err)
+	}
+	whole := archive.Bytes()
+	// The last 2048 bytes are the closing entry and the tar trailer: without
+	// them the archive ends on a file boundary, as a tar file may.
+	for _, size := range []int{len(whole) - 2048, len(whole) - 2048 - 1024, len(whole) / 2, 700} {
+		parent := t.TempDir()
+		if err := Restore(filepath.Join(parent, "data"), bytes.NewReader(whole[:size])); err == nil {
+			t.Errorf("Restore accepted the first %d bytes of a %d byte archive", size, len(whole))
+		}
+		if left, _ := os.ReadDir(parent); len(left) != 0 {
+			t.Errorf("cut at %d: a failed restore left %v behind", size, left)
+		}
+	}
+}
+
+func TestRestoreLeavesAFileAtTheTargetAlone(t *testing.T) {
+	_, dir := vaultWithContent(t)
+	var archive bytes.Buffer
+	if err := Backup(dir, &archive); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "data")
+	if err := os.WriteFile(target, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Restore(target, &archive); err == nil {
+		t.Error("Restore replaced a file with the vault")
+	}
+	if got, _ := os.ReadFile(target); string(got) != "not a directory" {
+		t.Errorf("the file at the target changed: %q", got)
+	}
+}
+
+func TestBackupListsItemsBeforeAttachmentsAndClosesTheArchive(t *testing.T) {
+	_, dir := vaultWithContent(t)
+	var archive bytes.Buffer
+	if err := Backup(dir, &archive); err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	tr := tar.NewReader(&archive)
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, h.Name)
+	}
+	want := []string{"version", "recipient.txt", "identity.age", "totp.json", "items/" + idA + ".age", "items/" + idB + ".age", "blobs/" + idA + ".age", "complete"}
+	if strings.Join(names, " ") != strings.Join(want, " ") {
+		t.Errorf("archive entries = %v, want %v", names, want)
+	}
+}
+
+func TestBackupRefusesALinkInTheVault(t *testing.T) {
+	_, dir := vaultWithContent(t)
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.WriteFile(outside, []byte("not part of the vault"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "items", idB+".age")
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	var archive bytes.Buffer
+	if err := Backup(dir, &archive); err == nil || bytes.Contains(archive.Bytes(), []byte("not part of the vault")) {
+		t.Errorf("Backup followed a link out of the vault: %v", err)
 	}
 }

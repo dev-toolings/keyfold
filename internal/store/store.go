@@ -64,7 +64,7 @@ func ETag(ciphertext []byte) string {
 
 // Open creates the data directory layout if needed, and refuses a directory
 // written by a newer layout than this code knows. A directory without a
-// version file predates it: it is layout 1, and gets the file.
+// version file predates it and is layout 1: Lock writes the file.
 func Open(dir string) (*Store, error) {
 	for _, d := range []string{dir, filepath.Join(dir, itemsDir), filepath.Join(dir, blobsDir)} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
@@ -76,14 +76,10 @@ func Open(dir string) (*Store, error) {
 	}
 	path := filepath.Join(dir, versionFile)
 	data, err := os.ReadFile(path)
-	switch {
-	case errors.Is(err, os.ErrNotExist):
-		if err := writeAtomic(path, strings.NewReader(strconv.Itoa(Layout)+"\n")); err != nil {
-			return nil, err
-		}
-	case err != nil:
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
-	default:
+	}
+	if err == nil {
 		v, err := strconv.Atoi(strings.TrimSpace(string(data)))
 		if err != nil {
 			return nil, fmt.Errorf("%s does not hold a layout version", path)
@@ -100,8 +96,9 @@ var ErrInUse = errors.New("the data directory is in use by another keyfold-serve
 
 // Lock makes this process the only writer of the directory, until it exits:
 // two servers on one directory would each accept a write that overwrites the
-// other's. It then removes the temp files a killed writer left behind, which
-// is only safe once no other writer can be in the middle of one.
+// other's. It then removes the temp files a killed writer left behind and
+// writes the layout version if it is missing: both are only safe once no other
+// writer can be in the middle of a write.
 func (s *Store) Lock() error {
 	f, err := os.OpenFile(filepath.Join(s.dir, lockFile), os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
@@ -125,6 +122,10 @@ func (s *Store) Lock() error {
 				return err
 			}
 		}
+	}
+	path := filepath.Join(s.dir, versionFile)
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		return writeAtomic(path, strings.NewReader(strconv.Itoa(Layout)+"\n"))
 	}
 	return nil
 }
@@ -367,14 +368,18 @@ func writeAtomic(path string, r io.Reader) error {
 
 // syncDir flushes a directory: without it, a file renamed or removed there can
 // be back in its former state after a power loss, although the caller was told
-// the change was done.
+// the change was done. Its error says the change is made and not flushed, so
+// that nobody takes it for a change that did not happen.
 func syncDir(dir string) error {
 	d, err := os.Open(dir)
-	if err != nil {
-		return err
+	if err == nil {
+		err = d.Sync()
+		d.Close()
 	}
-	defer d.Close()
-	return d.Sync()
+	if err != nil {
+		return fmt.Errorf("the change in %s is made but not flushed to disk: %w", dir, err)
+	}
+	return nil
 }
 
 // remove deletes a file and flushes its directory.

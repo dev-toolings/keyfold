@@ -73,25 +73,35 @@ func main() {
 }
 
 // backupTo archives the data directory into a new 0600 file. It never writes
-// over a file, and leaves none behind when the backup fails.
-func backupTo(dir, file string) (err error) {
-	f, err := os.OpenFile(file, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+// over a file. The archive is written under a ".partial" name and gets its
+// own once whole and flushed: a backup that fails, or is killed, leaves no
+// file to be taken for a good one, and can be run again.
+func backupTo(dir, file string) error {
+	f, err := os.CreateTemp(filepath.Dir(file), filepath.Base(file)+".partial-*")
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if err != nil {
-			f.Close()
-			os.Remove(file)
-		}
-	}()
+	defer os.Remove(f.Name())
 	if err := store.Backup(dir, f); err != nil {
+		f.Close()
 		return err
 	}
 	if err := f.Sync(); err != nil {
+		f.Close()
 		return err
 	}
-	return f.Close()
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Link(f.Name(), file); err != nil { // fails when file exists
+		return err
+	}
+	d, err := os.Open(filepath.Dir(file))
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
 }
 
 func restoreFrom(dir, file string) error {
