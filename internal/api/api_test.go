@@ -432,6 +432,89 @@ func enableTOTP(t *testing.T, ts *httptest.Server, token string, at time.Time) s
 	return setup.Secret
 }
 
+func TestNonLocalIdentityRequiresTOTPEnabled(t *testing.T) {
+	ts, s, id, _ := setupServer(t)
+	token := login(t, ts, id)
+	h := s.handler()
+	for _, tc := range []struct{ name, token string }{
+		{"without a session", ""},
+		{"with a live session", token},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := clientRequest(http.MethodGet, "/api/v1/identity", "192.0.2.1")
+			if tc.token != "" {
+				r.Header.Set("Authorization", "Bearer "+tc.token)
+			}
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("identity with TOTP disabled: got %d, want 403", w.Code)
+			}
+			var reply map[string]string
+			if err := json.Unmarshal(w.Body.Bytes(), &reply); err != nil {
+				t.Fatal(err)
+			}
+			if len(reply) != 1 || reply["error"] != "Enable the second factor on the server machine first" {
+				t.Fatal("the response must contain only the error directing the owner to enable the second factor on the server machine")
+			}
+		})
+	}
+}
+
+func TestLocalIdentityWithoutTOTP(t *testing.T) {
+	ts, _, _ := setup(t)
+	if code := getIdentity(t, ts, "", "", nil); code != http.StatusOK {
+		t.Fatalf("local identity with TOTP disabled: got %d, want 200", code)
+	}
+}
+
+func TestNonLocalIdentityWithValidTOTP(t *testing.T) {
+	ts, s, id, _ := setupServer(t)
+	clock := time.Unix(1_800_000_000, 0)
+	s.now = func() time.Time { return clock }
+	secret := enableTOTP(t, ts, login(t, ts, id), clock)
+	clock = clock.Add(totpPeriod * time.Second)
+	code, err := totp.GenerateCode(secret, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := clientRequest(http.MethodGet, "/api/v1/identity", "192.0.2.1")
+	r.Header.Set(totpHeader, code)
+	w := httptest.NewRecorder()
+	s.handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("non-local identity with a valid code: got %d, want 200", w.Code)
+	}
+}
+
+func TestSessionMaximumLifetime(t *testing.T) {
+	ts, s, id, _ := setupServer(t)
+	started := time.Unix(1_800_000_000, 0)
+	clock := started
+	s.now = func() time.Time { return clock }
+	old := login(t, ts, id)
+	for elapsed := 10 * time.Minute; elapsed < 12*time.Hour; elapsed += 10 * time.Minute {
+		clock = started.Add(elapsed)
+		if code := call(t, ts, http.MethodGet, "/api/v1/items", old, nil, nil); code != http.StatusOK {
+			t.Fatalf("active session after %s: got %d, want 200", elapsed, code)
+		}
+	}
+	young := login(t, ts, id)
+	clock = started.Add(12*time.Hour + time.Second)
+	if code := call(t, ts, http.MethodGet, "/api/v1/items", old, nil, nil); code != http.StatusUnauthorized {
+		t.Fatalf("active session past 12 hours: got %d, want 401", code)
+	}
+	s.mu.Lock()
+	_, retained := s.sessions[old]
+	s.mu.Unlock()
+	if retained {
+		t.Fatal("expired session was retained")
+	}
+	if code := call(t, ts, http.MethodGet, "/api/v1/items", young, nil, nil); code != http.StatusOK {
+		t.Fatalf("younger session: got %d, want 200", code)
+	}
+}
+
 func TestTOTPGatesIdentity(t *testing.T) {
 	ts, s, id, _ := setupServer(t)
 	clock := time.Unix(1_800_000_000, 0)
@@ -574,12 +657,24 @@ func TestClientLockoutSurvivesTablePressure(t *testing.T) {
 
 func TestClientCallLimit(t *testing.T) {
 	_, s, _, _ := setupServer(t)
+	if err := s.store.SetTOTP(store.TOTP{Secret: clientLimitTestSecret, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
 	clock := time.Unix(1_800_000_000, 0)
 	s.now = func() time.Time { return clock }
 	handler := s.handler()
 	call := func(method, path, address string) *httptest.ResponseRecorder {
+		t.Helper()
+		r := clientRequest(method, "/api/v1/"+path, address)
+		if path == "identity" {
+			code, err := totp.GenerateCode(clientLimitTestSecret, clock)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r.Header.Set(totpHeader, code)
+		}
 		w := httptest.NewRecorder()
-		handler.ServeHTTP(w, clientRequest(method, "/api/v1/"+path, address))
+		handler.ServeHTTP(w, r)
 		return w
 	}
 	const clientA, clientB = "192.0.2.1", "192.0.2.2"

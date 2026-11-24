@@ -100,7 +100,12 @@ function PasswordForm({ first, totp, onDone }: { first: boolean; totp: boolean; 
       onDone();
     } catch (err) {
       if (err instanceof vault.InstallTokenError) setInstallTokenRefused(true);
-      setError(errorMessage(err));
+      const message = errorMessage(err);
+      setError(
+        message === "Enable the second factor on the server machine first"
+          ? "Ouvrez Keyfold sur la machine qui héberge le serveur, activez la double authentification dans les paramètres, puis revenez sur cette page pour réessayer."
+          : message,
+      );
       setBusy(false);
     }
   }
