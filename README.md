@@ -305,6 +305,14 @@ encrypted with age and it asks no master password, but `totp.json` is in clear
 
 `kf export` is not a backup: it leaves attachments out.
 
+## License
+
+Keyfold is licensed under [AGPL-3.0](LICENSE). If you run a modified Keyfold as
+a network service, you must prominently offer the corresponding source code
+of your modified version to its users.
+
+See the [security policy](SECURITY.md) and [changelog](CHANGELOG.md).
+
 ## Credits
 
 `kf generate -words` and the web generator use the EFF large wordlist by the
