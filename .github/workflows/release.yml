@@ -1,3 +1,5 @@
+# Run check, image-build, release, then image. A failed workflow can be rerun in full.
+# Pushing architecture build tags and running docker buildx imagetools create are safe to repeat.
 name: release
 
 on:
@@ -58,7 +60,7 @@ jobs:
   # The archives stay on this runner through upload.
   release:
     name: Binaries and release
-    needs: check
+    needs: [check, image-build]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -112,16 +114,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cd "$RUNNER_TEMP/keyfold-release" || exit 1
-          flags=()
-          if [[ "$RELEASE_TAG" == *-* ]]; then
-            flags+=(--prerelease)
+          notes="$RUNNER_TEMP/keyfold-release-notes.md"
+          if gh release view "$RELEASE_TAG" --repo "$REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" ./*.tar.gz checksums.txt --repo "$REPOSITORY" --clobber
+            gh release edit "$RELEASE_TAG" --repo "$REPOSITORY" --notes-file "$notes"
+          else
+            flags=()
+            if [[ "$RELEASE_TAG" == *-* ]]; then
+              flags+=(--prerelease)
+            fi
+            gh release create "$RELEASE_TAG" ./*.tar.gz checksums.txt \
+              --repo "$REPOSITORY" --verify-tag --notes-file "$notes" "${flags[@]}"
           fi
-          gh release create "$RELEASE_TAG" ./*.tar.gz checksums.txt \
-            --repo "$REPOSITORY" --verify-tag --notes-file "$RUNNER_TEMP/keyfold-release-notes.md" \
-            "${flags[@]}"
 
   image-build:
-    needs: [check, release]
+    needs: check
     strategy:
       matrix:
         include:
@@ -155,7 +162,7 @@ jobs:
           docker push "$arch_tag"
 
   image:
-    needs: image-build
+    needs: release
     runs-on: ubuntu-24.04
     permissions:
       packages: write
