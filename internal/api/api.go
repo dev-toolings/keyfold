@@ -65,11 +65,10 @@ type challenge struct {
 }
 
 type clientState struct {
-	lastSeen        time.Time
-	windowEnd       time.Time
-	calls           int
-	totpFailures    int
-	totpLockedUntil time.Time
+	windowEnd    time.Time
+	calls        int
+	totpFailures int
+	totpUntil    time.Time // expires both the failure count and any resulting lockout
 }
 
 type server struct {
@@ -81,10 +80,11 @@ type server struct {
 	now     func() time.Time // replaced by tests
 	started time.Time
 
-	mu         sync.Mutex
-	challenges map[string]challenge
-	sessions   map[string]time.Time // token -> last use
-	clients    map[string]*clientState
+	mu          sync.Mutex
+	challenges  map[string]challenge
+	sessions    map[string]time.Time    // token -> last use
+	clients     map[string]*clientState // remote clients only
+	localClient clientState             // reserved for requests that pass hosts.Local
 
 	totpLastStep int64 // last accepted time step: a code is used once
 }
@@ -146,32 +146,39 @@ func (s *server) handler() http.Handler {
 	return logger.Access(s.allowedHost(secure(http.NewCrossOriginProtection().Handler(s.limitBody(mux)))))
 }
 
-// limitsFor returns a client's state with s.mu held.
-func (s *server) limitsFor(address string, now time.Time) *clientState {
+// limitsFor returns a client's state, or the wait for an available slot, with s.mu held.
+func (s *server) limitsFor(r *http.Request, now time.Time) (*clientState, time.Duration) {
+	if hosts.Local(r) {
+		return &s.localClient, 0
+	}
+	address := hosts.Client(r)
 	if client := s.clients[address]; client != nil {
-		client.lastSeen = now
-		return client
+		return client, 0
 	}
 	if len(s.clients) >= maxClients {
-		var oldest *clientState
-		var oldestAddress string
+		var retry time.Duration
 		for addr, client := range s.clients {
-			if client.totpFailures == 0 && !now.Before(client.totpLockedUntil) && !now.Before(client.windowEnd) {
+			// A slot frees when both the call window and the TOTP restriction expire.
+			remaining := max(client.windowEnd.Sub(now), client.totpUntil.Sub(now))
+			if remaining <= 0 {
 				delete(s.clients, addr)
-				continue
-			}
-			if oldest == nil || client.lastSeen.Before(oldest.lastSeen) {
-				oldest, oldestAddress = client, addr
+			} else if retry == 0 || remaining < retry {
+				retry = remaining
 			}
 		}
 		if len(s.clients) >= maxClients {
-			// Eviction resets this client's call budget and TOTP failures or lockout.
-			delete(s.clients, oldestAddress)
+			// New remote clients wait while all slots have active restrictions.
+			// This preserves call budgets and TOTP limits under address churn.
+			return nil, retry
 		}
 	}
-	client := &clientState{lastSeen: now}
+	client := &clientState{}
 	s.clients[address] = client
-	return client
+	return client, 0
+}
+
+func retryAfter(wait time.Duration) string {
+	return strconv.Itoa(int((wait + time.Second - 1) / time.Second))
 }
 
 // limitCalls gives each remote client one budget shared by the session-free routes.
@@ -181,24 +188,25 @@ func (s *server) limitCalls(next http.HandlerFunc) http.HandlerFunc {
 			next(w, r)
 			return
 		}
-		address := hosts.Client(r)
 		s.mu.Lock()
 		now := s.now()
-		client := s.limitsFor(address, now)
-		if !now.Before(client.windowEnd) {
-			client.windowEnd = now.Add(time.Minute)
-			client.calls = 0
+		client, retry := s.limitsFor(r, now)
+		if client != nil {
+			if !now.Before(client.windowEnd) {
+				client.windowEnd = now.Add(time.Minute)
+				client.calls = 0
+			}
+			if client.calls < maxCallsPerMinute {
+				client.calls++
+				s.mu.Unlock()
+				next(w, r)
+				return
+			}
+			retry = client.windowEnd.Sub(now)
 		}
-		if client.calls >= maxCallsPerMinute {
-			retry := (client.windowEnd.Sub(now) + time.Second - 1) / time.Second
-			s.mu.Unlock()
-			w.Header().Set("Retry-After", strconv.Itoa(int(retry)))
-			fail(w, http.StatusTooManyRequests, "too many requests, try again later")
-			return
-		}
-		client.calls++
 		s.mu.Unlock()
-		next(w, r)
+		w.Header().Set("Retry-After", retryAfter(retry))
+		fail(w, http.StatusTooManyRequests, "too many requests, try again later")
 	}
 }
 
@@ -332,7 +340,7 @@ func (s *server) identity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if t.Enabled && !s.liveSession(r) {
-		if code, msg := s.checkTOTP(r, t.Secret, r.Header.Get(totpHeader)); code != 0 {
+		if code, msg := s.checkTOTP(w, r, t.Secret, r.Header.Get(totpHeader)); code != 0 {
 			fail(w, code, msg)
 			return
 		}
@@ -443,16 +451,23 @@ func (s *server) auth(next http.HandlerFunc) http.HandlerFunc {
 
 // checkTOTP returns 0 when code is valid for secret, else an HTTP status and a
 // message. It accepts the previous, current and next 30 s window, refuses a
-// code from a window already used, and locks the client out for 15 minutes
-// after 5 failures in a row. Failures answer 403, never 401: a wrong code must
-// not end the caller's session.
-func (s *server) checkTOTP(r *http.Request, secret, code string) (int, string) {
-	address := hosts.Client(r)
+// code from a window already used, and locks the client out after 5 failures.
+// The count and lockout expire 15 minutes after the last counted failure.
+// A wrong code answers 403 so the caller's session stays open.
+func (s *server) checkTOTP(w http.ResponseWriter, r *http.Request, secret, code string) (int, string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	now := s.now()
-	client := s.limitsFor(address, now)
-	if now.Before(client.totpLockedUntil) {
+	client, retry := s.limitsFor(r, now)
+	if client == nil {
+		s.mu.Unlock()
+		w.Header().Set("Retry-After", retryAfter(retry))
+		return http.StatusTooManyRequests, "too many requests, try again later"
+	}
+	defer s.mu.Unlock()
+	if !now.Before(client.totpUntil) {
+		client.totpFailures = 0
+	}
+	if client.totpFailures >= totpMaxFailures {
 		return http.StatusTooManyRequests, "too many wrong TOTP codes, try again later"
 	}
 	if code == "" {
@@ -467,15 +482,13 @@ func (s *server) checkTOTP(r *http.Request, secret, code string) (int, string) {
 		if step := at.Unix() / totpPeriod; step > s.totpLastStep {
 			s.totpLastStep = step
 			client.totpFailures = 0
+			client.totpUntil = time.Time{}
 			return 0, ""
 		}
 		break // a replayed code counts as a failure
 	}
 	client.totpFailures++
-	if client.totpFailures >= totpMaxFailures {
-		client.totpFailures = 0
-		client.totpLockedUntil = now.Add(totpLockout)
-	}
+	client.totpUntil = now.Add(totpLockout)
 	return http.StatusForbidden, "invalid TOTP code"
 }
 
@@ -499,7 +512,7 @@ func (s *server) putIdentity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if t.Enabled {
-		if code, msg := s.checkTOTP(r, t.Secret, req.Code); code != 0 {
+		if code, msg := s.checkTOTP(w, r, t.Secret, req.Code); code != 0 {
 			fail(w, code, msg)
 			return
 		}
@@ -567,7 +580,7 @@ func (s *server) totpEnable(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusConflict, "no pending TOTP setup")
 		return
 	}
-	if code, msg := s.checkTOTP(r, t.Secret, req.Code); code != 0 {
+	if code, msg := s.checkTOTP(w, r, t.Secret, req.Code); code != 0 {
 		fail(w, code, msg)
 		return
 	}
@@ -595,7 +608,7 @@ func (s *server) totpDisable(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusConflict, "TOTP is not enabled")
 		return
 	}
-	if code, msg := s.checkTOTP(r, t.Secret, req.Code); code != 0 {
+	if code, msg := s.checkTOTP(w, r, t.Secret, req.Code); code != 0 {
 		fail(w, code, msg)
 		return
 	}

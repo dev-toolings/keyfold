@@ -209,10 +209,13 @@ changed.
   and `kf mcp` do not: they use the agent, already unlocked.
 - A code works once across all clients. Five wrong codes in a row lock TOTP
   checks for that client's IP address for 15 minutes.
-- Each client IP has a shared limit of 60 calls per minute across status, init,
-  identity retrieval, challenge and session. Direct requests to a loopback host
-  from a loopback connection without forwarding headers are exempt from this
-  call limit. The TOTP lockout still applies.
+- Remote clients share a per-IP budget of 60 calls per minute across status,
+  init, identity retrieval, challenge and session. Direct requests to a loopback
+  host from a loopback connection without forwarding headers are exempt from
+  this call limit and have a separate TOTP failure count and lockout. TOTP
+  failures expire 15 minutes after the last counted failure. The server tracks
+  up to 1,024 remote clients and returns HTTP 429 with `Retry-After` to new
+  remote clients while all slots have active limits.
 - The secret is stored in clear in `data/totp.json` (0600): the server must read
   it alone. TOTP does not protect a stolen disk.
 - Phone lost: on the server machine, `keyfold-server -disable-totp -data ./data`.
