@@ -117,6 +117,11 @@ The server URL comes from `-server`, then `KEYFOLD_SERVER`, then
 | `kf rm <name>` | Deletes an item and its attachments. |
 | `kf migrate [-apply]` | Lists the items stored in an older format; `-apply` rewrites them in the current one. |
 
+An item that cannot be decrypted (a damaged file, or a format this `kf` does
+not know) is skipped: a warning on stderr gives its id, and every other item
+stays usable. `list`, `export`, `import` and `migrate` then exit with code 3,
+since they worked on a part of the vault only.
+
 Example: start a program with its database password, without a `.env` file:
 
 ```sh
@@ -208,6 +213,7 @@ password.
   encrypted locally. It refuses a name that already exists.
 - `vault_health`: the server facts of `/personal/health` and the dashboard
   indicators (stale, reused, short, weak, website without TOTP) as item names.
+  `unreadable` lists the ids of the items that could not be decrypted.
   The rules are in `internal/vault/health.go`, the same as the web
   (`packages/vault-core/src/stats.ts`): `internal/vault/testdata/health.json`
   holds cases both test suites check.

@@ -87,6 +87,7 @@ func run(args []string, stdin, stdout *os.File, stderr io.Writer) int {
 	cmd, rest := fs.Arg(0), fs.Args()[1:]
 
 	var err error
+	code := 0
 	switch cmd {
 	case "init":
 		err = cmdInit(c, stdin, stderr)
@@ -113,10 +114,7 @@ func run(args []string, stdin, stdout *os.File, stderr io.Writer) int {
 		}
 		err = cmdRead(c, rest, stdout)
 	case "run":
-		var code int
-		if code, err = cmdRun(c, rest, stdin, stdout, stderr); err == nil {
-			return code
-		}
+		code, err = cmdRun(c, rest, stdin, stdout, stderr)
 	case "inject":
 		err = cmdInject(c, rest, stdout, stderr)
 	case "generate":
@@ -141,18 +139,33 @@ func run(args []string, stdin, stdout *os.File, stderr io.Writer) int {
 		fs.Usage()
 		return 2
 	}
+	if len(c.unreadable) > 0 {
+		fmt.Fprintf(stderr, "kf: warning: %d item(s) cannot be read and were skipped: %s\n", len(c.unreadable), strings.Join(c.unreadable, ", "))
+	}
 	if err != nil {
 		fmt.Fprintln(stderr, "kf:", err)
 		return 1
 	}
-	return 0
+	// A command whose result stands for the whole vault did its work, on a
+	// part of it only.
+	if len(c.unreadable) > 0 && slices.Contains([]string{"list", "export", "import", "migrate"}, cmd) {
+		return exitPartial
+	}
+	return code
 }
+
+// exitPartial is the exit code of list, export, import and migrate when they
+// worked on the readable items only.
+const exitPartial = 3
 
 // client talks to the server API.
 type client struct {
 	base  string
 	token string
 	totp  string // sent once with the identity download when the server asks for it
+	// unreadable holds the ids of the items open could not decrypt: a damaged
+	// file, or a format this kf does not know. They are skipped, not fatal.
+	unreadable []string
 }
 
 func (c *client) do(method, path string, in, out any) error {
@@ -255,7 +268,9 @@ func newEntry() entry {
 	return entry{id: hex.EncodeToString(b)}
 }
 
-// open logs in with the agent identity and decrypts every item.
+// open logs in with the agent identity and decrypts every item it can. One
+// item that cannot be read must not put every other secret out of reach: its
+// id goes to c.unreadable.
 func (c *client) open() (*age.X25519Identity, []entry, error) {
 	s, err := agent.Identity()
 	if err != nil {
@@ -277,8 +292,8 @@ func (c *client) open() (*age.X25519Identity, []entry, error) {
 	for _, r := range raw {
 		it, err := vault.DecryptItem(r.Ciphertext, id)
 		if err != nil {
-			c.logout()
-			return nil, nil, fmt.Errorf("item %s cannot be decrypted", r.ID)
+			c.unreadable = append(c.unreadable, r.ID)
+			continue
 		}
 		entries = append(entries, entry{id: r.ID, etag: r.ETag, item: it})
 	}

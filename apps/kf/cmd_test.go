@@ -116,3 +116,39 @@ func TestExportImport(t *testing.T) {
 		t.Fatalf("%d items, want 2", len(entries))
 	}
 }
+
+func TestUnreadableItemDoesNotHideTheOthers(t *testing.T) {
+	url, st, _ := setupVault(t)
+	storeItem(t, url, vault.Item{Name: "fake-db", Kind: "login", Value: "fake-pw-123"})
+	const damaged = "000000000000000000000000000000dd"
+	if err := st.Put(damaged, []byte("not an age file"), ""); err != nil {
+		t.Fatal(err)
+	}
+	kf := func(args ...string) (int, string, string) {
+		t.Helper()
+		var stderr bytes.Buffer
+		out := fileWith(t, "")
+		code := run(append([]string{"-server", url}, args...), fileWith(t, ""), out, &stderr)
+		buf := make([]byte, 256)
+		n, _ := out.ReadAt(buf, 0)
+		return code, string(buf[:n]), stderr.String()
+	}
+
+	// The list covers a part of the vault only: it says so and exits 3.
+	code, stdout, stderr := kf("list")
+	if code != 3 || stdout != "fake-db\tlogin\n" || !strings.Contains(stderr, damaged) {
+		t.Errorf("list: exit %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+	// A readable secret is still handed out, and the session still works.
+	code, stdout, stderr = kf("read", "kf://fake-db/value")
+	if code != 0 || stdout != "fake-pw-123\n" || !strings.Contains(stderr, "cannot be read") {
+		t.Errorf("read: exit %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+	// Without the damaged item, no warning and the usual exit code.
+	if err := st.Delete(damaged, ""); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, stderr := kf("list"); code != 0 || stderr != "" {
+		t.Errorf("list of a whole vault: exit %d, stderr %q", code, stderr)
+	}
+}

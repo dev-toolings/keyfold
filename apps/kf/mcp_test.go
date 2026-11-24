@@ -89,7 +89,7 @@ func TestMCPToolsNeverReturnValues(t *testing.T) {
 	}
 
 	health, isErr := call("vault_health", map[string]any{})
-	if isErr || !strings.Contains(health, `"items":2`) || !strings.Contains(health, `"api":"v1"`) || !strings.Contains(health, `"no_totp":[]`) {
+	if isErr || !strings.Contains(health, `"items":2`) || !strings.Contains(health, `"api":"v1"`) || !strings.Contains(health, `"no_totp":[]`) || !strings.Contains(health, `"unreadable":[]`) {
 		t.Fatalf("vault_health = %s", health)
 	}
 

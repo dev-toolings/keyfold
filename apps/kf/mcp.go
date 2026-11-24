@@ -57,6 +57,9 @@ type healthOutput struct {
 	Server serverHealth `json:"server"`
 	// Vault holds the dashboard indicators, by item name.
 	Vault vault.Health `json:"vault"`
+	// Unreadable holds the ids of the items that could not be decrypted: the
+	// indicators leave them out.
+	Unreadable []string `json:"unreadable"`
 }
 
 // generatedKinds are the kinds a random value makes sense for.
@@ -92,6 +95,7 @@ func newMCPServer(base string) *mcp.Server {
 		Name: "vault_health",
 		Description: "Health check of the Keyfold vault. server: API version, item and attachment counts, attachment bytes, free disk space, TOTP on or off, open sessions, uptime. " +
 			"vault: the web dashboard indicators as item names: stale (not modified for more than 90 days), reused (same secret as another item), short (password under 16 characters), weak (estimated under 60 bits), no_totp (website login without a TOTP secret). " +
+			"unreadable: ids of the items that could not be decrypted (damaged file or unknown format), left out of the indicators. " +
 			"Never returns a value or a note. The vault must be unlocked first with `kf unlock`.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, healthOutput, error) {
@@ -111,6 +115,7 @@ func newMCPServer(base string) *mcp.Server {
 			items = append(items, it)
 		}
 		out.Vault = vault.ComputeHealth(items, time.Now())
+		out.Unreadable = append([]string{}, c.unreadable...)
 		return nil, out, nil
 	})
 
