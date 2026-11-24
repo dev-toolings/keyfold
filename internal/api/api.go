@@ -42,6 +42,7 @@ const (
 	// anyone can request: past it, the oldest is dropped.
 	maxChallenges     = 100
 	sessionIdle       = 15 * time.Minute
+	sessionMaxAge     = 12 * time.Hour
 	maxClients        = 1024
 	maxCallsPerMinute = 60
 
@@ -67,6 +68,11 @@ type challenge struct {
 	expires time.Time
 }
 
+type sessionState struct {
+	lastUsed time.Time
+	expires  time.Time
+}
+
 type clientState struct {
 	windowEnd    time.Time
 	calls        int
@@ -89,7 +95,7 @@ type server struct {
 
 	mu          sync.Mutex
 	challenges  map[string]challenge
-	sessions    map[string]time.Time    // token -> last use
+	sessions    map[string]sessionState
 	clients     map[string]*clientState // remote clients only
 	localClient clientState             // reserved for requests that pass hosts.Local
 
@@ -127,7 +133,7 @@ func newServer(st *store.Store) *server {
 	s := &server{
 		store: st, maxBlob: DefaultMaxBlob, now: time.Now, started: time.Now(),
 		initStore:  st.Init,
-		challenges: map[string]challenge{}, sessions: map[string]time.Time{}, clients: map[string]*clientState{},
+		challenges: map[string]challenge{}, sessions: map[string]sessionState{}, clients: map[string]*clientState{},
 	}
 	if !st.Initialized() {
 		s.installToken = randomHex(16)
@@ -356,8 +362,8 @@ func (s *server) initVault(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]bool{"initialized": true})
 }
 
-// identity hands out the encrypted identity. With TOTP on, it takes a valid code
-// or a live session: without either, nobody can fetch it for an offline attack.
+// identity hands out the encrypted identity. With TOTP off, only local
+// requests can fetch it. With TOTP on, a valid code or live session is required.
 func (s *server) identity(w http.ResponseWriter, r *http.Request) {
 	if !s.store.Initialized() {
 		fail(w, http.StatusNotFound, "not initialized")
@@ -366,6 +372,10 @@ func (s *server) identity(w http.ResponseWriter, r *http.Request) {
 	t, err := s.store.TOTP()
 	if err != nil {
 		internalError(w, err)
+		return
+	}
+	if !t.Enabled && !hosts.Local(r) {
+		fail(w, http.StatusForbidden, "Enable the second factor on the server machine first")
 		return
 	}
 	if t.Enabled && !s.liveSession(r) {
@@ -438,31 +448,33 @@ func (s *server) session(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := s.now()
 	c, ok := s.challenges[req.ID]
 	delete(s.challenges, req.ID) // single use, whatever the answer
-	if !ok || s.now().After(c.expires) || subtle.ConstantTimeCompare(c.answer, req.Answer) != 1 {
+	if !ok || now.After(c.expires) || subtle.ConstantTimeCompare(c.answer, req.Answer) != 1 {
 		fail(w, http.StatusUnauthorized, "challenge failed")
 		return
 	}
 	token := randomHex(32)
-	s.sessions[token] = s.now()
+	s.sessions[token] = sessionState{lastUsed: now, expires: now.Add(sessionMaxAge)}
 	writeJSON(w, http.StatusOK, map[string]string{"token": token})
 }
 
 // liveSession reports whether r carries a live bearer token, and refreshes its idle timer.
 func (s *server) liveSession(r *http.Request) bool {
 	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for k, last := range s.sessions {
-		if now.Sub(last) > sessionIdle {
+	now := s.now()
+	for k, session := range s.sessions {
+		if now.Sub(session.lastUsed) > sessionIdle || !now.Before(session.expires) {
 			delete(s.sessions, k)
 		}
 	}
-	_, live := s.sessions[token]
+	session, live := s.sessions[token]
 	if ok && live {
-		s.sessions[token] = now
+		session.lastUsed = now
+		s.sessions[token] = session
 	}
 	return ok && live
 }

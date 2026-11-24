@@ -223,12 +223,19 @@ the temp files a killed one left behind.
 
 ## Second factor (TOTP)
 
-Optional, offered right after the vault is created and in Settings
-(`/personal/settings`, bottom of the sidebar), where the master password can also be
-changed.
+The server refuses remote downloads of the encrypted vault identity while TOTP
+is off. When TOTP is on, downloads require a valid code or a live session. A copy
+of the encrypted identity lets someone try master passwords offline. A client
+that already holds the decrypted identity, such as the `kf` agent or an unlocked
+browser tab, can answer a challenge and start a new session without a code. An
+unlocked remote client can turn TOTP off with a valid code.
 
-- With TOTP on, the encrypted identity is only handed out against a code, so
-  nobody who merely reaches the server can download it for an offline attack.
+Open Keyfold directly on the server machine to enable TOTP after creating the
+vault or in Settings (`/personal/settings`, bottom of the sidebar), where the
+master password can also be changed. TOTP is optional for direct local access.
+
+- With TOTP on, retrieving the encrypted identity requires a valid code or a
+  live session.
   Unlocking in the browser and `kf unlock` ask for the code. `kf get`, `set`
   and `kf mcp` do not: they use the agent, already unlocked.
 - A code works once across all clients. Five wrong codes in a row lock TOTP
@@ -279,12 +286,18 @@ claude mcp add keyfold -- "$PWD/bin/kf" mcp
   vault identity (X25519) is encrypted with the master password (age scrypt
   recipient). Each item, name included, is an age file encrypted to that
   identity. The server never sees the master password, the identity or a value.
-- `GET /api/v1/identity` needs no session: it exposes no more than a stolen disk
-  would, and the master password strength is what protects the vault. With TOTP
-  on, it needs a valid code (header `X-TOTP-Code`) or a live session.
+- With TOTP off, `GET /api/v1/identity` is available only over a loopback
+  connection to a loopback host without forwarding headers. Other requests
+  receive HTTP 403, even with a live session. With TOTP on, downloading the
+  encrypted identity requires a valid code (header `X-TOTP-Code`) or a live
+  session. The download lets someone try master passwords offline. A client
+  that already holds the decrypted identity can answer a challenge and start a
+  new session without a code. An unlocked remote client can turn TOTP off with a
+  valid code.
 - API access needs a session token, obtained by decrypting a random challenge
-  with the identity. Tokens and challenges live in server memory only (15 min
-  idle expiry), so a server restart locks every client.
+  with the identity. Sessions expire after 15 minutes of inactivity or 12 hours
+  from creation, whichever comes first. Tokens and challenges live in server
+  memory only, so a server restart locks every client.
 - Every response carries a Content-Security-Policy (own files only, plus the
   breach check API; no inline script), `X-Frame-Options: DENY`,
   `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`. API
