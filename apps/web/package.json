@@ -5,8 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
-    "build:site": "tsc --noEmit && VITE_SITE_ONLY=1 vite build --outDir dist-site"
+    "build": "tsc --noEmit && vite build"
   },
   "dependencies": {
     "@tanstack/react-table": "^9.3.1",

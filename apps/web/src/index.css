@@ -154,9 +154,8 @@
   }
 }
 
-/* The product's primary button: a dark pill with a cast shadow and a slow light
-   ring. It is the default variant of Button, so the vault and the landing page
-   share this one definition. Unlayered on purpose: it must win over the radius
+/* The default Button variant is a dark pill with a cast shadow and a slow light
+   ring. Unlayered on purpose: it must win over the radius
    and colour utilities of the other variants' base classes. */
 .btn-brand {
   position: relative;

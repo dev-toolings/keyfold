@@ -147,10 +147,11 @@ SSH_ASKPASS=./askpass.sh SSH_ASKPASS_REQUIRE=force ssh-add ~/path/to/key
 
 ## Web UI
 
-`/` is the public product page (French), `/en` its English version. The vault
-app lives under `/personal`: `/personal/unlock`, then `/personal/dashboard`,
-`/personal/vault`, `/personal/health` and `/personal/settings`. Any other path
-(an old `/vault` bookmark) opens under `/personal`.
+The self-hosted web UI serves the vault. `/` and `/en` redirect to
+`/personal/dashboard`. If the vault is locked, it opens `/personal/unlock`
+first and returns to the dashboard after unlock. The other vault pages are
+`/personal/vault`, `/personal/health` and `/personal/settings`. Legacy paths
+such as `/vault` still open under `/personal`.
 
 `/personal/health` is the health check: what the server stores (item and
 attachment counts, sizes, free disk space, TOTP, open sessions, from the
