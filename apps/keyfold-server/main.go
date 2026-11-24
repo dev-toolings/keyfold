@@ -2,17 +2,26 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 
 	"keyfold/internal/api"
 	"keyfold/internal/logger"
 	"keyfold/internal/store"
 )
+
+// shutdownGrace is how long requests in flight get to finish after a stop signal.
+const shutdownGrace = 15 * time.Second
 
 func main() {
 	listen := flag.String("listen", "127.0.0.1:8717", "listen address")
@@ -46,9 +55,43 @@ func main() {
 			slog.Warn("web dir not found, serving the API only", "dir", *web)
 		}
 	}
+	ln, err := net.Listen("tcp", *listen)
+	if err != nil {
+		slog.Error("listen", "err", err)
+		os.Exit(1)
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	slog.Info("keyfold-server listening", "url", "http://"+*listen, "data", *data, "allowedHosts", opts.Hosts)
-	slog.Error("server stopped", "err", http.ListenAndServe(*listen, api.New(st, opts)))
-	os.Exit(1)
+	if err := serve(ctx, api.New(st, opts), ln); err != nil {
+		slog.Error("server stopped", "err", err)
+		os.Exit(1)
+	}
+	slog.Info("keyfold-server stopped")
+}
+
+// serve answers requests on ln until ctx ends, then stops accepting and lets
+// the requests in flight finish for up to shutdownGrace. It bounds how long a
+// client may take to send its headers or hold an idle connection, but not a
+// body: an attachment upload can be long.
+func serve(ctx context.Context, h http.Handler, ln net.Listener) error {
+	srv := &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute}
+	failed := make(chan error, 1)
+	go func() { failed <- srv.Serve(ln) }()
+	select {
+	case err := <-failed:
+		return err
+	case <-ctx.Done():
+	}
+	grace, cancel := context.WithTimeout(context.Background(), shutdownGrace)
+	defer cancel()
+	if err := srv.Shutdown(grace); err != nil {
+		return err
+	}
+	if err := <-failed; !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
 }
 
 // hostList splits the -allowed-hosts value into lower case host names.
