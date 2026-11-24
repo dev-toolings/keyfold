@@ -42,9 +42,13 @@ site-dev: ## Start the public product site dev server (apps/site, Next.js)
 
 # ─── Build ────────────────────────────────────────────────────────────────────
 
+VERSION ?= $(shell git describe --tags --exact-match --match 'v*' HEAD 2>/dev/null || printf '%s\n' dev)
+COMMIT  ?= $(shell git rev-parse --short=7 HEAD 2>/dev/null)
+
 build: ## Build the kf and keyfold-server binaries into bin/
-	@go build -o bin/kf ./apps/kf
-	@go build -o bin/keyfold-server ./apps/keyfold-server
+	@ldflags="-X keyfold/internal/version.Version=$(VERSION) -X keyfold/internal/version.Commit=$(COMMIT)"; \
+		go build -ldflags "$$ldflags" -o bin/kf ./apps/kf && \
+		go build -ldflags "$$ldflags" -o bin/keyfold-server ./apps/keyfold-server
 	@printf "$(C_OK)[make] built bin/kf and bin/keyfold-server$(C_RESET)\n"
 
 web-build: ## Build the web UI into apps/web/dist

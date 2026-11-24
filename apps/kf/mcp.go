@@ -13,6 +13,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"keyfold/internal/vault"
+	"keyfold/internal/version"
 )
 
 // The MCP tools let an AI agent see what the vault holds and add generated
@@ -69,7 +70,7 @@ type healthOutput struct {
 var generatedKinds = []string{"login", "token", "ssh-passphrase"}
 
 func newMCPServer(base string) *mcp.Server {
-	s := mcp.NewServer(&mcp.Implementation{Name: "keyfold", Version: "0.1.0"}, nil)
+	s := mcp.NewServer(&mcp.Implementation{Name: "keyfold", Version: version.Version}, nil)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "list_items",

@@ -76,6 +76,7 @@ go run ./apps/keyfold-server -listen 127.0.0.1:8717 -data ./data -web ./apps/web
 ```
 
 `-web` serves the built UI as static files when the directory exists.
+`-version` prints the build version and commit (if available) and exits.
 `-allowed-hosts` (or `KEYFOLD_ALLOWED_HOSTS`) lists the host names accepted
 besides loopback ones, comma separated: the names a TLS reverse proxy in front
 of the server answers to. Any other `Host` gets 403, for the API and the web UI
@@ -128,6 +129,7 @@ the server log.
 
 | Command | What it does |
 |---|---|
+| `kf version` | Prints the build version and commit (if available) without a server or agent. |
 | `kf init` | Asks the master password twice (no echo) and creates the vault. |
 | `kf unlock [-ttl 1h]` | Asks the master password, decrypts the identity and starts a background agent on `$XDG_RUNTIME_DIR/keyfold/agent.sock` (without that variable, as on macOS: `keyfold-<uid>/agent.sock` in the temp directory). |
 | `kf lock` | Stops the agent. |
@@ -178,6 +180,7 @@ such as `/vault` still open under `/personal`.
 attachment counts, sizes, free disk space, TOTP, open sessions, from the
 authenticated `GET /api/v1/health`, which sees ciphertext only), attachment
 files no item lists, and the dashboard indicators of the vault.
+The endpoint also reports the server's build version in `version`.
 
 A new vault needs a master password of at least 16 characters, in the web UI
 and in `kf init`: the encrypted identity can be downloaded by anyone who

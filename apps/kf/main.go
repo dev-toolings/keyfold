@@ -30,11 +30,13 @@ import (
 	"keyfold/internal/hosts"
 	"keyfold/internal/store"
 	"keyfold/internal/vault"
+	"keyfold/internal/version"
 )
 
 const usage = `usage: kf [-server URL] <command> [args]
 
 commands:
+  version                    print the version
   init                       create the vault (asks the master password twice)
   unlock [-ttl 1h]           unlock and start the background agent
   lock                       stop the agent
@@ -92,6 +94,9 @@ func run(args []string, stdin, stdout *os.File, stderr io.Writer) int {
 	var err error
 	code := 0
 	switch cmd {
+	case "version":
+		fmt.Fprintln(stdout, "kf", version.Display())
+		return 0
 	case "init":
 		err = cmdInit(c, func(prompt string) (string, error) { return readPassword(stdin, stderr, prompt) }, stderr)
 	case "unlock":
