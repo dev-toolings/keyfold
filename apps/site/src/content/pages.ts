@@ -726,7 +726,7 @@ const selfHosting: DocPage = {
               p: "Open `http://127.0.0.1:8717` as for a host installation and enable TOTP. Take the stack down again with the same command, restore the original `ports` block in place of `network_mode: host`, then start the full stack with the HTTPS command above. Retest the two proxy checks.",
             },
             {
-              p: "If you create the vault remotely, read the single-use `installToken` from the server's startup log using the log command above. The web UI sends it in `X-Install-Token` when you enter it in the creation form. For remote `kf init`, set `KEYFOLD_INSTALL_TOKEN` to that token and target the HTTPS URL. Complete TOTP setup over direct loopback before trying to unlock remotely. A restart before creation generates a new token.",
+              p: "If you create the vault remotely, read the single-use `installToken` from the server's startup log using the log command above. A restart before creation generates a new token. When you enter the token in the web form, the web UI sends it in `X-Install-Token`. The vault is created, then the page tries to unlock it and reports that you must enable the second factor on the server machine. Nothing is lost. Do not create the vault again. Open Keyfold over direct loopback as described above, unlock with the same master password and enable TOTP in Settings. Then reload the remote page and unlock with your master password and TOTP code. For remote `kf init`, set `KEYFOLD_INSTALL_TOKEN` to the install token, target the HTTPS URL and complete the same TOTP setup before unlocking remotely.",
             },
           ],
         },
@@ -748,14 +748,16 @@ const selfHosting: DocPage = {
           title: "How do I back up and restore the vault?",
           blocks: [
             {
-              p: "On a host installation, open a private directory to hold your archive and run the backup as an account with access to the vault data. Choose a new archive name for each run.",
-            },
-            { code: "sudo /usr/local/bin/keyfold-server -data /var/lib/keyfold -backup vault.tar" },
-            {
-              p: "For Compose, make the archive in the writable `/data` volume, then copy it into your private working directory. Remove the staged copy from the volume after confirming the copy succeeded.",
+              p: "On a host installation, run the backup with sudo to read the vault data. These commands create a new private directory in your home directory and make your account the owner of the 0600 archive.",
             },
             {
-              code: "docker compose -f packaging/compose.yml exec vault keyfold-server -data /data -backup /data/vault.tar\ndocker compose -f packaging/compose.yml cp vault:/data/vault.tar vault.tar",
+              code: 'backup_dir=$(mktemp -d "$HOME/keyfold-backup.XXXXXXXX") &&\nsudo /usr/local/bin/keyfold-server -data /var/lib/keyfold -backup "$backup_dir/vault.tar" &&\nsudo chown "$(id -u):$(id -g)" "$backup_dir/vault.tar"',
+            },
+            {
+              p: "For Compose, run these commands from the directory that contains `packaging/`, using your regular account with Docker access. Compose creates the archive in the writable `/data` volume and copies it into a new private directory under your home directory. By default, the local copy belongs to the account that runs `docker compose cp`. The last command removes the staged archive from the volume after the copy is ready.",
+            },
+            {
+              code: 'backup_dir=$(mktemp -d "$HOME/keyfold-backup.XXXXXXXX") &&\nstaged_archive="/data/$(basename "$backup_dir").tar" &&\ndocker compose -f packaging/compose.yml exec -T vault keyfold-server -data /data -backup "$staged_archive" &&\ndocker compose -f packaging/compose.yml cp "vault:$staged_archive" "$backup_dir/vault.tar" &&\nchmod 600 "$backup_dir/vault.tar" &&\ndocker compose -f packaging/compose.yml exec -T vault rm "$staged_archive"',
             },
             {
               p: "The archive contains the encrypted identity, items and attachments, plus the public recipient, the layout version and `totp.json` in clear if TOTP is configured. An online backup reads whole files, but a concurrent attachment deletion can leave an archived item missing its attachment. Pause writes while backing up before an update. Copy archives regularly to storage off the machine with restricted access.",
@@ -767,12 +769,15 @@ const selfHosting: DocPage = {
               code: "sudo install -m 0755 packaging/keyfold-backup.sh /usr/local/bin/keyfold-backup\nsudo install -m 0644 packaging/keyfold-backup.service packaging/keyfold-backup.timer /etc/systemd/system/\nsudo systemctl daemon-reload\nsudo systemctl enable --now keyfold-backup.timer",
             },
             {
-              p: "The timer runs daily, catches up after downtime and retains up to 14 archives named `keyfold-YYYYMMDDTHHMMSSZ.tar` in UTC. On the host they live in `/var/lib/private/keyfold-backups`, linked from `/var/lib/keyfold-backups`.",
+              p: "The timer runs daily, catches up after downtime and retains up to 14 archives named `keyfold-YYYYMMDDTHHMMSSZ.tar` in UTC. On the host they live in `/var/lib/private/keyfold-backups`, linked from `/var/lib/keyfold-backups`. Once an archive exists, use sudo to list and copy it. When `read` waits for input, enter the name of the archive you want. The copy belongs to your account and has mode 0600.",
             },
             {
-              p: "For a restore drill, copy an archive to a private working directory on a machine with the binaries and web UI. Restore into a new or empty directory.",
+              code: 'sudo ls -1 /var/lib/private/keyfold-backups &&\nread -r timer_archive &&\nbackup_dir=$(mktemp -d "$HOME/keyfold-backup.XXXXXXXX") &&\nsudo install -m 600 -o "$(id -u)" -g "$(id -g)" "/var/lib/private/keyfold-backups/$timer_archive" "$backup_dir/vault.tar"',
             },
-            { code: "keyfold-server -data ./new -restore vault.tar" },
+            {
+              p: "For a restore drill on a machine with the binaries and web UI, use the private directory from one of the steps above. If you moved the archive to another machine, set `backup_dir` to the private directory that holds `vault.tar`. Run the restore as your regular user. The `new` directory must be missing or empty.",
+            },
+            { code: 'keyfold-server -data "$backup_dir/new" -restore "$backup_dir/vault.tar"' },
             {
               p: "Start the restored copy on a separate loopback port. Use the original master password and authenticator, check the item count and open a downloaded attachment. Shut down the drill and remove the restored copy when done. The full README procedure is at https://github.com/dev-toolings/keyfold/blob/main/README.md#restore-drill",
             },
@@ -907,7 +912,7 @@ const selfHosting: DocPage = {
               p: "Ouvrez `http://127.0.0.1:8717` comme pour une installation sur l'hôte et activez le TOTP. Arrêtez de nouveau la pile avec la même commande, remettez le bloc `ports` d'origine à la place de `network_mode: host`, puis redémarrez toute la pile avec la commande HTTPS ci-dessus. Refaites les deux vérifications du proxy.",
             },
             {
-              p: "Si vous créez le coffre à distance, récupérez le jeton à usage unique `installToken` dans le journal de démarrage du serveur avec la commande de lecture des journaux ci-dessus. L'interface web l'envoie dans `X-Install-Token` lorsque vous le saisissez dans le formulaire de création. Pour `kf init` à distance, donnez ce jeton à `KEYFOLD_INSTALL_TOKEN` et utilisez l'URL HTTPS. Terminez la configuration du TOTP en boucle locale directe avant de déverrouiller le coffre à distance. Un redémarrage avant la création génère un nouveau jeton.",
+              p: "Si vous créez le coffre à distance, récupérez le jeton à usage unique `installToken` dans le journal de démarrage du serveur avec la commande de lecture des journaux ci-dessus. Un redémarrage avant la création génère un nouveau jeton. Lorsque vous saisissez le jeton dans le formulaire, l'interface web l'envoie dans `X-Install-Token`. Le coffre est créé, puis la page tente de le déverrouiller et vous indique que vous devez activer la double authentification sur la machine serveur. Rien n'est perdu. Ne créez pas le coffre une seconde fois. Ouvrez Keyfold en boucle locale directe comme indiqué ci-dessus, déverrouillez le coffre avec le même mot de passe principal et activez le TOTP dans les Paramètres. Rechargez ensuite la page distante et déverrouillez le coffre avec votre mot de passe principal et votre code TOTP. Pour `kf init` à distance, donnez le jeton d'installation à `KEYFOLD_INSTALL_TOKEN`, utilisez l'URL HTTPS et suivez la même procédure d'activation du TOTP avant de déverrouiller le coffre à distance.",
             },
           ],
         },
@@ -929,14 +934,16 @@ const selfHosting: DocPage = {
           title: "Comment sauvegarder et restaurer le coffre ?",
           blocks: [
             {
-              p: "Pour une installation sur l'hôte, placez-vous dans un dossier privé pour y stocker l'archive et lancez la sauvegarde avec un compte qui a accès aux données du coffre. Choisissez un nouveau nom d'archive à chaque exécution.",
-            },
-            { code: "sudo /usr/local/bin/keyfold-server -data /var/lib/keyfold -backup vault.tar" },
-            {
-              p: "Pour Compose, créez l'archive dans le volume accessible en écriture `/data`, puis copiez-la dans votre dossier de travail privé. Supprimez la copie temporaire du volume après avoir vérifié que la copie a réussi.",
+              p: "Pour une installation sur l'hôte, lancez la sauvegarde avec sudo pour lire les données du coffre. Ces commandes créent un nouveau dossier privé dans votre répertoire personnel et attribuent à votre compte la propriété de l'archive, dont les permissions sont de 0600.",
             },
             {
-              code: "docker compose -f packaging/compose.yml exec vault keyfold-server -data /data -backup /data/vault.tar\ndocker compose -f packaging/compose.yml cp vault:/data/vault.tar vault.tar",
+              code: 'backup_dir=$(mktemp -d "$HOME/keyfold-backup.XXXXXXXX") &&\nsudo /usr/local/bin/keyfold-server -data /var/lib/keyfold -backup "$backup_dir/vault.tar" &&\nsudo chown "$(id -u):$(id -g)" "$backup_dir/vault.tar"',
+            },
+            {
+              p: "Pour Compose, lancez ces commandes depuis le dossier qui contient `packaging/`, avec votre compte habituel disposant d'un accès à Docker. Compose crée l'archive dans le volume accessible en écriture `/data` et la copie dans un nouveau dossier privé de votre répertoire personnel. Par défaut, la copie locale appartient au compte qui lance `docker compose cp`. La dernière commande supprime l'archive temporaire du volume une fois la copie prête.",
+            },
+            {
+              code: 'backup_dir=$(mktemp -d "$HOME/keyfold-backup.XXXXXXXX") &&\nstaged_archive="/data/$(basename "$backup_dir").tar" &&\ndocker compose -f packaging/compose.yml exec -T vault keyfold-server -data /data -backup "$staged_archive" &&\ndocker compose -f packaging/compose.yml cp "vault:$staged_archive" "$backup_dir/vault.tar" &&\nchmod 600 "$backup_dir/vault.tar" &&\ndocker compose -f packaging/compose.yml exec -T vault rm "$staged_archive"',
             },
             {
               p: "L'archive contient l'identité, les éléments et les pièces jointes chiffrés, ainsi que le destinataire public, la version du format de stockage et `totp.json` en clair si le TOTP est configuré. Une sauvegarde à chaud lit des fichiers entiers, mais si une pièce jointe est supprimée en même temps, elle peut manquer à un élément archivé. Suspendez les écritures pendant la sauvegarde qui précède une mise à jour. Copiez régulièrement les archives ailleurs que sur la machine, dans un espace de stockage à accès restreint.",
@@ -948,12 +955,15 @@ const selfHosting: DocPage = {
               code: "sudo install -m 0755 packaging/keyfold-backup.sh /usr/local/bin/keyfold-backup\nsudo install -m 0644 packaging/keyfold-backup.service packaging/keyfold-backup.timer /etc/systemd/system/\nsudo systemctl daemon-reload\nsudo systemctl enable --now keyfold-backup.timer",
             },
             {
-              p: "Le minuteur s'exécute tous les jours, rattrape les exécutions manquées et conserve jusqu'à 14 archives nommées `keyfold-YYYYMMDDTHHMMSSZ.tar` en UTC. Sur l'hôte, elles se trouvent dans `/var/lib/private/keyfold-backups`, accessible par le lien `/var/lib/keyfold-backups`.",
+              p: "Le minuteur s'exécute tous les jours, rattrape les exécutions manquées et conserve jusqu'à 14 archives nommées `keyfold-YYYYMMDDTHHMMSSZ.tar` en UTC. Sur l'hôte, elles se trouvent dans `/var/lib/private/keyfold-backups`, accessible par le lien `/var/lib/keyfold-backups`. Dès qu'une archive existe, utilisez sudo pour l'afficher dans la liste et la copier. Lorsque `read` attend une saisie, entrez le nom de l'archive voulue. La copie appartient à votre compte et ses permissions sont de 0600.",
             },
             {
-              p: "Pour tester une restauration, copiez une archive dans un dossier de travail privé sur une machine équipée des binaires et de l'interface web. Restaurez dans un dossier neuf ou vide.",
+              code: 'sudo ls -1 /var/lib/private/keyfold-backups &&\nread -r timer_archive &&\nbackup_dir=$(mktemp -d "$HOME/keyfold-backup.XXXXXXXX") &&\nsudo install -m 600 -o "$(id -u)" -g "$(id -g)" "/var/lib/private/keyfold-backups/$timer_archive" "$backup_dir/vault.tar"',
             },
-            { code: "keyfold-server -data ./new -restore vault.tar" },
+            {
+              p: "Pour tester une restauration sur une machine équipée des binaires et de l'interface web, utilisez le dossier privé créé à l'une des étapes ci-dessus. Si vous avez transféré l'archive sur une autre machine, donnez à `backup_dir` le chemin du dossier privé contenant `vault.tar`. Lancez la restauration avec votre compte habituel. Le dossier `new` doit être absent ou vide.",
+            },
+            { code: 'keyfold-server -data "$backup_dir/new" -restore "$backup_dir/vault.tar"' },
             {
               p: "Démarrez la copie restaurée sur un autre port en boucle locale. Utilisez le mot de passe principal et l'application d'authentification d'origine, vérifiez le nombre d'éléments et ouvrez une pièce jointe téléchargée. Arrêtez le serveur de test et supprimez la copie restaurée à la fin. La procédure complète du README est à l'adresse https://github.com/dev-toolings/keyfold/blob/main/README.md#restore-drill",
             },
