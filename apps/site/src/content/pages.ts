@@ -92,12 +92,12 @@ const security: DocPage = {
                   ["Encrypted item files", "Your master password"],
                   ["Encrypted attachments", "The vault identity"],
                   ["The encrypted identity", "A secret value"],
-                  ["The TOTP secret, when the second factor is on", "An item name"],
+                  ["The TOTP secret in cleartext, once set up", "An item name"],
                 ],
               },
             },
             {
-              p: "Its logs hold one line per request with the method, the path, the status and the duration: never a header, a body or a query string.",
+              p: "Each access log line includes the method, path, status, duration, client IP, request ID and matched route pattern when available. It omits raw headers, the body and the query string. An internal error also logs its text, which can include file paths or operating system errors.",
             },
           ],
         },
@@ -106,7 +106,7 @@ const security: DocPage = {
           title: "Why does the master password matter so much?",
           blocks: [
             {
-              p: "The encrypted identity can be downloaded by anyone who reaches the server: `GET /api/v1/identity` needs no session, since it exposes no more than a stolen disk would. The strength of the master password is what protects the vault against an offline attack.",
+              p: "Anyone who obtains a copy of the encrypted identity, for example from a stolen disk, can try master passwords offline. The master password protects the identity in that copy.",
             },
             {
               p: "That is why a new vault needs a master password of at least 16 characters, in the web UI and in `kf init`.",
@@ -119,9 +119,9 @@ const security: DocPage = {
           blocks: [
             {
               list: [
-                "API access needs a session token, obtained by decrypting a random challenge with the identity.",
-                "Tokens and challenges live in server memory only, with a 15 minute idle expiry. A server restart locks every client.",
-                "The web UI keeps the identity and the token in memory only. A copied secret is cleared from the clipboard after 30 seconds.",
+                "Protected API routes require a session token. To obtain one, decrypt a random challenge with the vault identity.",
+                "A challenge expires after 60 seconds. A session expires after 15 minutes of inactivity or 12 hours from creation, whichever comes first. Challenges and sessions live in server memory and are lost on restart.",
+                "The web UI keeps the identity and token in memory only. It tries to clear a copied secret from the clipboard after 30 seconds.",
                 "The CLI agent receives the identity through a pipe, never argv or the environment, and serves it on a `0600` socket in a `0700` directory. It exits after its TTL or on `kf lock`.",
               ],
             },
@@ -132,11 +132,12 @@ const security: DocPage = {
           title: "What does the second factor add?",
           blocks: [
             {
-              p: "The TOTP second factor is optional. With it on, the encrypted identity is only handed out against a valid code, so nobody who merely reaches the server can download it for an offline attack.",
+              p: "With TOTP off, the encrypted identity is available only to a loopback client using a loopback host with no forwarding headers. With TOTP on, downloading it requires a valid code or a live session.",
             },
             {
               list: [
-                "A code works once. Five wrong codes in a row lock every check for 15 minutes.",
+                "The server rejects reused TOTP time steps across all clients and keeps the last accepted step in memory. After a restart, a code can be accepted again if it is still within the accepted window.",
+                "Five wrong or replayed codes in a row lock TOTP checks for that client for 15 minutes. Each remote IP also has one budget of 60 calls per minute across status, vault creation, identity download, challenge and session routes. Direct loopback requests have a separate TOTP limit and are exempt from the call limit.",
                 "The TOTP secret is stored in clear in `data/totp.json` (mode 0600), because the server must read it alone. TOTP does not protect a stolen disk.",
                 "Phone lost: run `keyfold-server -disable-totp -data ./data` on the server machine.",
               ],
@@ -149,8 +150,8 @@ const security: DocPage = {
           blocks: [
             {
               list: [
-                "TLS: the server speaks plain HTTP and must stay on `127.0.0.1`.",
-                "Backups of the data directory are not handled.",
+                "The server speaks plain HTTP and listens on loopback by default. For other devices, use a TLS reverse proxy on the same machine. Declare its host with `-allowed-hosts` and have the proxy preserve `Host` and append the client IP to `X-Forwarded-For`. The server accepts loopback and declared hosts.",
+                "`packaging/` includes a container, a Compose example with Caddy and a systemd unit. The backup timer keeps local archives. Copying them off the machine is up to the operator.",
                 "Changing the master password re-wraps the same identity: items are not re-encrypted, and an older copy of the data directory still opens with the old password.",
                 "The breach check against Have I Been Pwned is off by default. Once allowed in Settings, it runs on request and sends only the first 5 characters of each password's SHA-1.",
               ],
@@ -196,12 +197,12 @@ const security: DocPage = {
                   ["Les fichiers chiffrés des éléments", "Votre mot de passe principal"],
                   ["Les pièces jointes chiffrées", "L'identité du coffre"],
                   ["L'identité chiffrée", "La valeur d'un secret"],
-                  ["Le secret TOTP, si le second facteur est activé", "Le nom d'un élément"],
+                  ["Le secret TOTP en clair, dès sa configuration", "Le nom d'un élément"],
                 ],
               },
             },
             {
-              p: "Ses journaux contiennent une ligne par requête avec la méthode, le chemin, le statut et la durée : jamais d'en-tête, de corps ni de chaîne de requête.",
+              p: "Chaque ligne du journal d'accès indique la méthode, le chemin, le statut, la durée, l'adresse IP du client, l'identifiant de requête et, si disponible, le motif de la route. Elle omet les en-têtes bruts, le corps et la chaîne de requête. Une erreur interne est aussi journalisée avec son texte, qui peut inclure des chemins de fichiers ou des erreurs du système.",
             },
           ],
         },
@@ -210,7 +211,7 @@ const security: DocPage = {
           title: "Pourquoi le mot de passe principal compte-t-il autant ?",
           blocks: [
             {
-              p: "L'identité chiffrée peut être téléchargée par quiconque atteint le serveur : `GET /api/v1/identity` ne demande pas de session, car il n'expose rien de plus qu'un disque volé. C'est la robustesse du mot de passe principal qui protège le coffre contre une attaque hors ligne.",
+              p: "Quiconque obtient une copie de l'identité chiffrée, par exemple sur un disque volé, peut essayer des mots de passe hors ligne. Le mot de passe principal protège l'identité dans cette copie.",
             },
             {
               p: "C'est pourquoi un nouveau coffre exige un mot de passe principal d'au moins 16 caractères, dans l'interface web comme avec `kf init`.",
@@ -223,9 +224,9 @@ const security: DocPage = {
           blocks: [
             {
               list: [
-                "L'accès à l'API demande un jeton de session, obtenu en déchiffrant un défi aléatoire avec l'identité.",
-                "Les jetons et les défis ne vivent que dans la mémoire du serveur, avec une expiration après 15 minutes d'inactivité. Un redémarrage du serveur verrouille tous les clients.",
-                "L'interface web garde l'identité et le jeton en mémoire seulement. Un secret copié est effacé du presse-papiers après 30 secondes.",
+                "Les routes protégées de l'API exigent un jeton de session. Pour l'obtenir, déchiffrez un défi aléatoire avec l'identité du coffre.",
+                "Un défi expire après 60 secondes. Une session expire après 15 minutes d'inactivité ou 12 heures après sa création, au premier des deux délais. Les défis et les sessions sont gardés en mémoire et disparaissent au redémarrage du serveur.",
+                "L'interface web garde l'identité et le jeton en mémoire seulement. Elle tente d'effacer un secret copié du presse-papiers après 30 secondes.",
                 "L'agent de la CLI reçoit l'identité par un tube, jamais par argv ni par l'environnement, et la sert sur un socket `0600` dans un dossier `0700`. Il s'arrête à la fin de sa durée de vie ou sur `kf lock`.",
               ],
             },
@@ -236,11 +237,12 @@ const security: DocPage = {
           title: "Qu'apporte le second facteur ?",
           blocks: [
             {
-              p: "Le second facteur TOTP est optionnel. Une fois activé, l'identité chiffrée n'est remise que contre un code valide : quelqu'un qui atteint seulement le serveur ne peut plus la télécharger pour une attaque hors ligne.",
+              p: "Sans TOTP, l'identité chiffrée est réservée aux clients en boucle locale qui utilisent un nom d'hôte de boucle locale, sans en-tête de transfert. Avec le TOTP activé, son téléchargement exige un code valide ou une session active.",
             },
             {
               list: [
-                "Un code ne sert qu'une fois. Cinq codes faux d'affilée bloquent toute vérification pendant 15 minutes.",
+                "Le serveur refuse de réutiliser un créneau TOTP, tous clients confondus, et garde en mémoire le dernier créneau accepté. Après un redémarrage, un code peut être accepté à nouveau s'il est encore dans la fenêtre admise.",
+                "Cinq codes incorrects ou rejoués d'affilée bloquent les vérifications TOTP de ce client pendant 15 minutes. Chaque adresse IP distante dispose aussi de 60 appels par minute au total pour l'état du coffre, sa création, le téléchargement de l'identité, le défi et la session. Les requêtes directes en boucle locale ont une limite TOTP distincte et sont exemptées de la limite d'appels.",
                 "Le secret TOTP est stocké en clair dans `data/totp.json` (mode 0600), car le serveur doit pouvoir le lire seul. Le TOTP ne protège pas un disque volé.",
                 "Téléphone perdu : lancez `keyfold-server -disable-totp -data ./data` sur la machine du serveur.",
               ],
@@ -253,8 +255,8 @@ const security: DocPage = {
           blocks: [
             {
               list: [
-                "TLS : le serveur parle HTTP en clair et doit rester sur `127.0.0.1`.",
-                "Les sauvegardes du dossier de données ne sont pas prises en charge.",
+                "Le serveur parle HTTP en clair et écoute en boucle locale par défaut. Pour les autres appareils, utilisez un proxy inverse TLS sur la même machine. Déclarez son nom d'hôte avec `-allowed-hosts`. Le proxy doit conserver `Host` et ajouter l'adresse IP du client à `X-Forwarded-For`. Le serveur accepte les noms d'hôte de boucle locale et ceux déclarés.",
+                "`packaging/` fournit un conteneur, un exemple Compose avec Caddy et une unité systemd. Le minuteur de sauvegarde conserve des archives locales. Leur copie hors de la machine revient à l'opérateur.",
                 "Changer le mot de passe principal ré-enveloppe la même identité : les éléments ne sont pas rechiffrés, et une ancienne copie du dossier de données s'ouvre toujours avec l'ancien mot de passe.",
                 "La vérification des fuites auprès de Have I Been Pwned est désactivée par défaut. Une fois autorisée dans les Paramètres, elle s'exécute à la demande et n'envoie que les 5 premiers caractères du SHA-1 de chaque mot de passe.",
               ],
@@ -283,7 +285,7 @@ const cli: DocPage = {
           id: "install",
           title: "How do I install kf and reach the server?",
           blocks: [
-            { p: "Build the binary from the repository:" },
+            { p: "`kf` builds for Linux and macOS. Build the binary from the repository:" },
             { code: "go build -o bin/kf ./apps/kf" },
             {
               p: "The server URL comes from the `-server` flag, then the `KEYFOLD_SERVER` environment variable, then `http://127.0.0.1:8717`. A URL that is not a loopback address must start with `https://`.",
@@ -299,8 +301,8 @@ const cli: DocPage = {
             },
             {
               list: [
-                "`kf init` asks the master password twice, without echo, and creates the vault.",
-                "`kf unlock [-ttl 1h]` asks the master password, decrypts the identity and starts a background agent on `$XDG_RUNTIME_DIR/keyfold/agent.sock` (without that variable, as on macOS: `keyfold-<uid>/agent.sock` in the temp directory).",
+                "`kf init` asks for the master password twice, without echo, and creates the vault. For remote creation, set `KEYFOLD_INSTALL_TOKEN` to the install token from the server log.",
+                "`kf unlock [-ttl 1h]` asks for the master password and, if TOTP is enabled, a code. It decrypts the identity and starts a background agent on `$XDG_RUNTIME_DIR/keyfold/agent.sock` or, if that variable is unset, on `keyfold-<uid>/agent.sock` in the temp directory.",
                 "`kf lock` stops the agent.",
               ],
             },
@@ -388,7 +390,7 @@ const cli: DocPage = {
           id: "installation",
           title: "Comment installer kf et joindre le serveur ?",
           blocks: [
-            { p: "Compilez le binaire depuis le dépôt :" },
+            { p: "`kf` se compile pour Linux et macOS. Compilez le binaire depuis le dépôt :" },
             { code: "go build -o bin/kf ./apps/kf" },
             {
               p: "L'adresse du serveur vient de l'option `-server`, puis de la variable d'environnement `KEYFOLD_SERVER`, puis de `http://127.0.0.1:8717`. Une adresse qui n'est pas en boucle locale doit commencer par `https://`.",
@@ -404,8 +406,8 @@ const cli: DocPage = {
             },
             {
               list: [
-                "`kf init` demande deux fois le mot de passe principal, sans l'afficher, et crée le coffre.",
-                "`kf unlock [-ttl 1h]` demande le mot de passe principal, déchiffre l'identité et lance un agent en arrière-plan sur `$XDG_RUNTIME_DIR/keyfold/agent.sock` (sans cette variable, comme sur macOS : `keyfold-<uid>/agent.sock` dans le dossier temporaire).",
+                "`kf init` demande deux fois le mot de passe principal, sans l'afficher, et crée le coffre. Pour une création à distance, définissez `KEYFOLD_INSTALL_TOKEN` avec le jeton d'installation du journal du serveur.",
+                "`kf unlock [-ttl 1h]` demande le mot de passe principal et, si le TOTP est activé, un code. La commande déchiffre l'identité et lance un agent en arrière-plan sur `$XDG_RUNTIME_DIR/keyfold/agent.sock` ou, si cette variable est absente, sur `keyfold-<uid>/agent.sock` dans le dossier temporaire.",
                 "`kf lock` arrête l'agent.",
               ],
             },

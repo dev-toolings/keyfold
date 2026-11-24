@@ -83,7 +83,7 @@ export const CONTENT: Record<Lang, Content> = {
         title: "CLI et agent local",
         tags: ["SSH", "Scripts", "Sans affichage"],
         description:
-          "La commande kf get donne une phrase de passe à un script sans jamais l'écrire dans un terminal ni dans un journal. Un agent local garde le coffre ouvert pour une durée limitée.",
+          "La commande kf get transmet une phrase de passe à un script via la sortie standard et refuse d'écrire dans un terminal. Un agent local garde le coffre ouvert pour une durée limitée.",
         link: { label: "Lire la référence de kf", to: "/cli" },
       },
       {
@@ -91,7 +91,7 @@ export const CONTENT: Record<Lang, Content> = {
         title: "MCP pour agents IA",
         tags: ["Claude Code", "Sans valeur", "Génération"],
         description:
-          "Un agent IA liste vos éléments et crée des secrets aléatoires. Aucun outil ne renvoie une valeur : rien de sensible n'entre dans la conversation du modèle.",
+          "Un agent IA liste vos éléments et crée des secrets aléatoires. Les outils peuvent renvoyer des noms d'éléments, mais aucune valeur ni note.",
         link: { label: "Voir les outils MCP", to: "/mcp" },
       },
       {
@@ -99,7 +99,7 @@ export const CONTENT: Record<Lang, Content> = {
         title: "Chiffrement côté client",
         tags: ["age", "X25519", "scrypt"],
         description:
-          "Le serveur ne stocke que des fichiers chiffrés. Un disque ou une image de machine volés ne révèlent rien sans votre mot de passe principal, qui ne quitte jamais votre poste.",
+          "Les éléments et les pièces jointes sont stockés chiffrés. Votre mot de passe principal protège l'identité du coffre et reste sur votre appareil.",
         link: { label: "Lire le modèle de sécurité", to: "/securite" },
       },
     ],
@@ -107,7 +107,7 @@ export const CONTENT: Record<Lang, Content> = {
     security: [
       {
         title: "Lire un secret",
-        text: "Il ne reçoit que des fichiers chiffrés avec age. La clé reste dans votre navigateur ou votre agent local.",
+        text: "Les éléments et les pièces jointes lui parviennent chiffrés avec age. La clé de déchiffrement reste côté client.",
       },
       {
         title: "Connaître votre mot de passe",
@@ -115,7 +115,7 @@ export const CONTENT: Record<Lang, Content> = {
       },
       {
         title: "Garder une session",
-        text: "Les sessions vivent en mémoire. Un redémarrage verrouille tout, et il faut déverrouiller de nouveau.",
+        text: "Les sessions vivent en mémoire. Elles expirent après 15 minutes d'inactivité ou 12 heures après leur création, et disparaissent au redémarrage.",
       },
     ],
     definition:
@@ -125,7 +125,7 @@ export const CONTENT: Record<Lang, Content> = {
       {
         question: "Keyfold est-il open source et auto-hébergé ?",
         answer:
-          "Il est auto-hébergé : vous lancez vous-même le serveur Go (keyfold-server), qui garde des fichiers chiffrés dans un dossier de données local. Le code source est public sur GitHub (dev-toolings/Keyfold), mais le dépôt ne contient pas encore de fichier de licence. Il n'y a ni service en ligne ni compte à créer.",
+          "Vous lancez vous-même le serveur Go (keyfold-server), réservé à Unix et testé sur Linux. Il garde les éléments et pièces jointes chiffrés dans un dossier de données local. Le code source est public sur GitHub (dev-toolings/keyfold) sous licence GNU AGPL version 3. Il n'y a ni service en ligne ni compte à créer.",
       },
       {
         question: "Que peut-on y ranger ?",
@@ -140,7 +140,7 @@ export const CONTENT: Record<Lang, Content> = {
       {
         question: "Le serveur peut-il lire mes mots de passe ?",
         answer:
-          "Non. Le serveur ne stocke que des fichiers age et ne reçoit jamais le mot de passe principal, l'identité ni une valeur. Un disque volé ne révèle rien sans le mot de passe principal, d'où un minimum de 16 caractères pour un nouveau coffre. Un second facteur TOTP, en option, empêche en plus quiconque atteint le serveur de télécharger l'identité chiffrée.",
+          "Les mots de passe sont chiffrés côté client. Le serveur ne reçoit ni le mot de passe principal ni l'identité déchiffrée. Une copie de l'identité chiffrée permet d'essayer des mots de passe hors ligne, d'où le minimum de 16 caractères à la création. Le TOTP doit être activé pour télécharger cette identité à distance. Une fois activé, il faut un code valide ou une session active.",
       },
       {
         question: "Un agent IA peut-il l'utiliser sans risque ?",
@@ -150,7 +150,7 @@ export const CONTENT: Record<Lang, Content> = {
       {
         question: "Comment importer depuis Bitwarden ou 1Password ?",
         answer:
-          "Avec la CLI : kf import -format bitwarden-json pour un export JSON de Bitwarden, -format 1password-1pux pour un export .1pux de 1Password, ou -format csv pour les CSV de Chrome, Firefox, Bitwarden et 1Password. Un élément déjà présent est ignoré, et les cartes de paiement sont ignorées puis listées. L'interface web ne propose pas encore l'import.",
+          "Avec la CLI : kf import -format bitwarden-json pour un export JSON de Bitwarden, -format 1password-1pux pour un export .1pux de 1Password, ou -format csv pour les CSV de Chrome, Firefox, Bitwarden et 1Password. Un élément déjà présent est ignoré, et les cartes de paiement sont ignorées puis listées. La CLI exporte uniquement en JSON Keyfold ou Bitwarden. L'interface web ne propose pas l'import.",
       },
       {
         question: "Quelle différence avec 1Password ou Bitwarden ?",
@@ -158,9 +158,9 @@ export const CONTENT: Record<Lang, Content> = {
           "Le périmètre est plus petit : une seule personne, un coffre auto-hébergé, une interface web, une CLI et un serveur MCP. Le dépôt ne contient ni extension de navigateur, ni application mobile, ni partage entre utilisateurs. Il vise l'usage développeur : kf run, kf inject, des phrases de passe SSH pour les scripts et des outils MCP qui ne renvoient jamais une valeur.",
       },
       {
-        question: "Qu'est-ce qui n'est pas encore fait ?",
+        question: "Comment accéder au coffre depuis un autre appareil ?",
         answer:
-          "Le TLS : le serveur parle en HTTP simple et doit rester sur 127.0.0.1. Il n'y a ni unité de service, ni conteneur, ni configuration de proxy inverse, ni sauvegarde du dossier de données. Les exports laissent les pièces jointes de côté.",
+          "Le serveur parle HTTP en clair et écoute en boucle locale par défaut. Pour les autres appareils, utilisez un proxy inverse TLS sur la même machine. Déclarez son nom d'hôte avec -allowed-hosts. Le proxy doit conserver Host et ajouter l'adresse IP du client à X-Forwarded-For. packaging/ fournit un conteneur, un exemple Compose avec Caddy et une unité systemd. Son minuteur de sauvegarde conserve des archives locales, pièces jointes comprises.",
       },
     ],
     footer: "Logiciel auto-hébergé, sans service en ligne.",
@@ -202,7 +202,7 @@ export const CONTENT: Record<Lang, Content> = {
         title: "CLI and local agent",
         tags: ["SSH", "Scripts", "Never printed"],
         description:
-          "The kf get command hands a passphrase to a script without ever writing it to a terminal or a log. A local agent keeps the vault open for a limited time.",
+          "The kf get command passes a passphrase to a script through stdout and refuses to write to a terminal. A local agent keeps the vault open for a limited time.",
         link: { label: "Read the kf reference", to: "/en/cli" },
       },
       {
@@ -210,7 +210,7 @@ export const CONTENT: Record<Lang, Content> = {
         title: "MCP for AI agents",
         tags: ["Claude Code", "No values", "Generation"],
         description:
-          "An AI agent lists your items and creates random secrets. No tool returns a value: nothing sensitive enters the model's conversation.",
+          "An AI agent lists your items and creates random secrets. The tools can return item names and never return values or notes.",
         link: { label: "See the MCP tools", to: "/en/mcp" },
       },
       {
@@ -218,7 +218,7 @@ export const CONTENT: Record<Lang, Content> = {
         title: "Client-side encryption",
         tags: ["age", "X25519", "scrypt"],
         description:
-          "The server only stores encrypted files. A stolen disk or machine image reveals nothing without your master password, which never leaves your computer.",
+          "Items and attachments are stored encrypted. Your master password protects the vault identity and stays on your device.",
         link: { label: "Read the security model", to: "/en/security" },
       },
     ],
@@ -226,7 +226,7 @@ export const CONTENT: Record<Lang, Content> = {
     security: [
       {
         title: "Read a secret",
-        text: "It only receives files encrypted with age. The key stays in your browser or your local agent.",
+        text: "Items and attachments reach the server encrypted with age. The decryption key stays on the client.",
       },
       {
         title: "Know your password",
@@ -234,7 +234,7 @@ export const CONTENT: Record<Lang, Content> = {
       },
       {
         title: "Keep a session",
-        text: "Sessions live in memory. A restart locks everything, and you unlock again.",
+        text: "Sessions live in memory. They expire after 15 minutes of inactivity or 12 hours from creation, and are lost on restart.",
       },
     ],
     definition:
@@ -244,7 +244,7 @@ export const CONTENT: Record<Lang, Content> = {
       {
         question: "Is Keyfold open source and self-hosted?",
         answer:
-          "It is self-hosted: you run the Go server (keyfold-server) yourself, and it keeps encrypted files in a local data directory. The source code is public on GitHub (dev-toolings/Keyfold), but the repository has no license file yet. There is no online service and no account to create.",
+          "You run the Go server (keyfold-server) yourself. It is Unix-only and tested on Linux. It keeps encrypted items and attachments in a local data directory. The source code is public on GitHub (dev-toolings/keyfold) under the GNU AGPL version 3. There is no online service and no account to create.",
       },
       {
         question: "What can I store in it?",
@@ -259,7 +259,7 @@ export const CONTENT: Record<Lang, Content> = {
       {
         question: "Can the server read my passwords?",
         answer:
-          "No. The server stores only age files and never receives the master password, the identity or a value. A stolen disk reveals nothing without the master password, which is why a new vault needs one of at least 16 characters. An optional TOTP second factor also stops anyone who reaches the server from downloading the encrypted identity.",
+          "Passwords are encrypted on the client. The server never receives the master password or the decrypted identity. A copy of the encrypted identity lets someone try passwords offline, which is why a new vault needs a master password of at least 16 characters. TOTP must be enabled to download that identity remotely. Once enabled, a valid code or a live session is required.",
       },
       {
         question: "Can AI agents use it safely?",
@@ -269,7 +269,7 @@ export const CONTENT: Record<Lang, Content> = {
       {
         question: "How do I import from Bitwarden or 1Password?",
         answer:
-          "With the CLI: kf import -format bitwarden-json for a Bitwarden JSON export, -format 1password-1pux for a 1Password .1pux export, or -format csv for CSV files from Chrome, Firefox, Bitwarden and 1Password. An item already present is skipped, and payment cards are skipped and listed. The web UI does not offer import yet.",
+          "With the CLI: kf import -format bitwarden-json for a Bitwarden JSON export, -format 1password-1pux for a 1Password .1pux export, or -format csv for CSV files from Chrome, Firefox, Bitwarden and 1Password. An item already present is skipped, and payment cards are skipped and listed. The CLI exports only Keyfold JSON or Bitwarden JSON. The web UI does not offer import.",
       },
       {
         question: "How does it compare with 1Password or Bitwarden?",
@@ -277,9 +277,9 @@ export const CONTENT: Record<Lang, Content> = {
           "Its scope is smaller: one person, one self-hosted vault, a web UI, a CLI and an MCP server. The repository has no browser extension, no mobile app and no sharing between users. It targets developer use: kf run, kf inject, SSH passphrases for scripts and MCP tools that never return a value.",
       },
       {
-        question: "What is not done yet?",
+        question: "How do I reach the vault from another device?",
         answer:
-          "TLS: the server speaks plain HTTP and must stay on 127.0.0.1. There is no service unit, container or reverse proxy setup, and no backup of the data directory. Exports leave attachments out.",
+          "The server speaks plain HTTP and listens on loopback by default. For other devices, use a TLS reverse proxy on the same machine. Declare its host with -allowed-hosts and have the proxy preserve Host and append the client IP to X-Forwarded-For. packaging/ includes a container, a Compose example with Caddy and a systemd unit. Its backup timer keeps local archives, including attachments.",
       },
     ],
     footer: "Self-hosted software, with no online service.",
