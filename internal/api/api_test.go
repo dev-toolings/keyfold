@@ -485,3 +485,84 @@ func TestHealth(t *testing.T) {
 		t.Fatalf("health = %v", h)
 	}
 }
+
+func TestDeclaredHostReachesAPIAndWebUI(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ui := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "ui") })
+	ts := httptest.NewServer(New(st, Options{Hosts: []string{"vault.example"}, Web: ui}))
+	t.Cleanup(ts.Close)
+
+	for _, c := range []struct {
+		name, method, path, host, origin string
+		want                             int
+	}{
+		{"declared host", "GET", "/api/v1/status", "vault.example", "", http.StatusOK},
+		{"declared host, other case and a port", "GET", "/api/v1/status", "VAULT.example:443", "", http.StatusOK},
+		{"foreign host", "GET", "/api/v1/status", "evil.example", "", http.StatusForbidden},
+		{"web UI on the declared host", "GET", "/", "vault.example", "", http.StatusOK},
+		{"web UI on a foreign host", "GET", "/", "evil.example", "", http.StatusForbidden},
+		{"unknown API path is not a UI page", "GET", "/api/v1/nope", "vault.example", "", http.StatusNotFound},
+		// Behind a TLS proxy the browser sends an https origin for the same host:
+		// the write passes the cross-origin check and reaches the handler (404, no vault yet).
+		{"same-origin write behind a TLS proxy", "POST", "/api/v1/challenge", "vault.example", "https://vault.example", http.StatusNotFound},
+		{"cross-site write", "POST", "/api/v1/challenge", "vault.example", "https://evil.example", http.StatusForbidden},
+	} {
+		req, _ := http.NewRequest(c.method, ts.URL+c.path, nil)
+		req.Host = c.host
+		if c.origin != "" {
+			req.Header.Set("Origin", c.origin)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != c.want {
+			t.Errorf("%s: got %d, want %d", c.name, resp.StatusCode, c.want)
+		}
+	}
+}
+
+func TestSecurityHeaders(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ui := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "ui") })
+	ts := httptest.NewServer(New(st, Options{Hosts: []string{"vault.example"}, Web: ui}))
+	t.Cleanup(ts.Close)
+
+	for _, c := range []struct {
+		name, path, host string
+		noStore, hsts    bool
+	}{
+		{"API on loopback", "/api/v1/status", "", true, false},
+		{"web UI on loopback", "/", "", false, false},
+		{"API on the declared host", "/api/v1/status", "vault.example", true, true},
+		{"web UI on the declared host", "/", "vault.example", false, true},
+	} {
+		req, _ := http.NewRequest("GET", ts.URL+c.path, nil)
+		if c.host != "" {
+			req.Host = c.host
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		h := resp.Header
+		if h.Get("Content-Security-Policy") != contentSecurityPolicy || h.Get("X-Content-Type-Options") != "nosniff" ||
+			h.Get("X-Frame-Options") != "DENY" || h.Get("Referrer-Policy") != "no-referrer" {
+			t.Errorf("%s: security headers missing: %v", c.name, h)
+		}
+		if got := h.Get("Cache-Control") == "no-store"; got != c.noStore {
+			t.Errorf("%s: Cache-Control no-store = %v, want %v", c.name, got, c.noStore)
+		}
+		if got := h.Get("Strict-Transport-Security") != ""; got != c.hsts {
+			t.Errorf("%s: HSTS sent = %v, want %v", c.name, got, c.hsts)
+		}
+	}
+}
