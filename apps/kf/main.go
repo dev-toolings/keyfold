@@ -87,6 +87,7 @@ func run(args []string, stdin, stdout *os.File, stderr io.Writer) int {
 	cmd, rest := fs.Arg(0), fs.Args()[1:]
 
 	var err error
+	code := 0
 	switch cmd {
 	case "init":
 		err = cmdInit(c, stdin, stderr)
@@ -113,10 +114,7 @@ func run(args []string, stdin, stdout *os.File, stderr io.Writer) int {
 		}
 		err = cmdRead(c, rest, stdout)
 	case "run":
-		var code int
-		if code, err = cmdRun(c, rest, stdin, stdout, stderr); err == nil {
-			return code
-		}
+		code, err = cmdRun(c, rest, stdin, stdout, stderr)
 	case "inject":
 		err = cmdInject(c, rest, stdout, stderr)
 	case "generate":
@@ -141,18 +139,33 @@ func run(args []string, stdin, stdout *os.File, stderr io.Writer) int {
 		fs.Usage()
 		return 2
 	}
+	if len(c.unreadable) > 0 {
+		fmt.Fprintf(stderr, "kf: warning: %d item(s) cannot be read and were skipped: %s\n", len(c.unreadable), strings.Join(c.unreadable, ", "))
+	}
 	if err != nil {
 		fmt.Fprintln(stderr, "kf:", err)
 		return 1
 	}
-	return 0
+	// A command whose result stands for the whole vault did its work, on a
+	// part of it only.
+	if len(c.unreadable) > 0 && (cmd == "list" || cmd == "migrate") {
+		return exitPartial
+	}
+	return code
 }
+
+// exitPartial is the exit code of list and migrate when they worked on the
+// readable items only.
+const exitPartial = 3
 
 // client talks to the server API.
 type client struct {
 	base  string
 	token string
 	totp  string // sent once with the identity download when the server asks for it
+	// unreadable holds the ids of the items open could not decrypt: a damaged
+	// file, or a format this kf does not know. They are skipped, not fatal.
+	unreadable []string
 }
 
 func (c *client) do(method, path string, in, out any) error {
@@ -255,7 +268,9 @@ func newEntry() entry {
 	return entry{id: hex.EncodeToString(b)}
 }
 
-// open logs in with the agent identity and decrypts every item.
+// open logs in with the agent identity and decrypts every item it can. One
+// item that cannot be read must not put every other secret out of reach: its
+// id goes to c.unreadable.
 func (c *client) open() (*age.X25519Identity, []entry, error) {
 	s, err := agent.Identity()
 	if err != nil {
@@ -277,12 +292,24 @@ func (c *client) open() (*age.X25519Identity, []entry, error) {
 	for _, r := range raw {
 		it, err := vault.DecryptItem(r.Ciphertext, id)
 		if err != nil {
-			c.logout()
-			return nil, nil, fmt.Errorf("item %s cannot be decrypted", r.ID)
+			c.unreadable = append(c.unreadable, r.ID)
+			continue
 		}
 		entries = append(entries, entry{id: r.ID, etag: r.ETag, item: it})
 	}
 	return id, entries, nil
+}
+
+// whole returns an error when open skipped items. Their names are unknown, so
+// a command that takes a name for free could make a second item of that name,
+// and one that writes the vault to a file would leave them out.
+func (c *client) whole() error {
+	if len(c.unreadable) == 0 {
+		return nil
+	}
+	// The ids are in the error itself: an MCP caller sees nothing else.
+	return fmt.Errorf("this needs the whole vault, and %d item(s) cannot be read (%s): restore them from a backup, or delete their files in items/ on the server",
+		len(c.unreadable), strings.Join(c.unreadable, ", "))
 }
 
 func find(entries []entry, name string) (entry, bool) {
@@ -525,6 +552,9 @@ func cmdSet(c *client, args []string, stdin *os.File, stderr io.Writer) error {
 		e.item, _ = vault.Upgrade(e.item)
 		e.item.CreatedAt = cmp.Or(e.item.CreatedAt, e.item.UpdatedAt)
 	} else {
+		if err := c.whole(); err != nil { // the name may be the one of an item that cannot be read
+			return err
+		}
 		e = newEntry()
 		e.item = vault.Item{V: vault.ItemVersion, Name: name, Kind: "login", CreatedAt: now}
 	}
