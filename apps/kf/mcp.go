@@ -28,6 +28,9 @@ type listedItem struct {
 
 type listOutput struct {
 	Items []listedItem `json:"items"`
+	// Unreadable holds the ids of the items that could not be decrypted, and
+	// so are not in Items.
+	Unreadable []string `json:"unreadable"`
 }
 
 type generateInput struct {
@@ -57,6 +60,9 @@ type healthOutput struct {
 	Server serverHealth `json:"server"`
 	// Vault holds the dashboard indicators, by item name.
 	Vault vault.Health `json:"vault"`
+	// Unreadable holds the ids of the items that could not be decrypted: the
+	// indicators leave them out.
+	Unreadable []string `json:"unreadable"`
 }
 
 // generatedKinds are the kinds a random value makes sense for.
@@ -67,7 +73,7 @@ func newMCPServer(base string) *mcp.Server {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "list_items",
-		Description: "List the items of the Keyfold vault: name, kind, creation and last modification dates. Never returns secret values or notes. The vault must be unlocked first with `kf unlock`.",
+		Description: "List the items of the Keyfold vault: name, kind, creation and last modification dates. unreadable: ids of the items that could not be decrypted (damaged file or unknown format), missing from the list. Never returns secret values or notes. The vault must be unlocked first with `kf unlock`.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, listOutput, error) {
 		c := &client{base: base}
@@ -76,7 +82,7 @@ func newMCPServer(base string) *mcp.Server {
 			return nil, listOutput{}, err
 		}
 		defer c.logout()
-		out := listOutput{Items: []listedItem{}}
+		out := listOutput{Items: []listedItem{}, Unreadable: append([]string{}, c.unreadable...)}
 		for _, e := range entries {
 			it, _ := vault.Upgrade(e.item) // the kinds generate_item accepts
 			out.Items = append(out.Items, listedItem{
@@ -92,6 +98,7 @@ func newMCPServer(base string) *mcp.Server {
 		Name: "vault_health",
 		Description: "Health check of the Keyfold vault. server: API version, item and attachment counts, attachment bytes, free disk space, TOTP on or off, open sessions, uptime. " +
 			"vault: the web dashboard indicators as item names: stale (not modified for more than 90 days), reused (same secret as another item), short (password under 16 characters), weak (estimated under 60 bits), no_totp (website login without a TOTP secret). " +
+			"unreadable: ids of the items that could not be decrypted (damaged file or unknown format), left out of the indicators. " +
 			"Never returns a value or a note. The vault must be unlocked first with `kf unlock`.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, healthOutput, error) {
@@ -111,12 +118,13 @@ func newMCPServer(base string) *mcp.Server {
 			items = append(items, it)
 		}
 		out.Vault = vault.ComputeHealth(items, time.Now())
+		out.Unreadable = append([]string{}, c.unreadable...)
 		return nil, out, nil
 	})
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "generate_item",
-		Description: "Create a new vault item holding a freshly generated random secret. The value is generated and encrypted locally and is never returned: read it later with `kf get <name>` or in the web UI. Fails if the name already exists. The vault must be unlocked first with `kf unlock`.",
+		Description: "Create a new vault item holding a freshly generated random secret. The value is generated and encrypted locally and is never returned: read it later with `kf get <name>` or in the web UI. Fails if the name already exists, or if an item of the vault cannot be decrypted (its name is unknown). The vault must be unlocked first with `kf unlock`.",
 	}, func(_ context.Context, _ *mcp.CallToolRequest, in generateInput) (*mcp.CallToolResult, generateOutput, error) {
 		name := strings.TrimSpace(in.Name)
 		kind := cmp.Or(in.Kind, "login")
@@ -134,6 +142,9 @@ func newMCPServer(base string) *mcp.Server {
 		defer c.logout()
 		if _, ok := find(entries, name); ok {
 			return nil, generateOutput{}, fmt.Errorf("an item named %q already exists", name)
+		}
+		if err := c.whole(); err != nil { // the name may be the one of an item that cannot be read
+			return nil, generateOutput{}, err
 		}
 		now := time.Now().UTC().Format(time.RFC3339)
 		it := vault.Item{V: vault.ItemVersion, Name: name, Kind: kind, Value: rand.Text(), CreatedAt: now, UpdatedAt: now}

@@ -63,6 +63,9 @@ func cmdExport(c *client, args []string, stdin, stdout *os.File, stderr io.Write
 		return err
 	}
 	defer c.logout()
+	if err := c.whole(); err != nil { // never a file that passes for the whole vault
+		return err
+	}
 	items := make([]vault.Item, 0, len(entries))
 	attached := 0
 	for _, e := range entries {
@@ -131,6 +134,9 @@ func cmdImport(c *client, args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	defer c.logout()
+	if err := c.whole(); err != nil { // an imported item may be one that cannot be read
+		return err
+	}
 	values := map[string]string{} // name -> sameness key, of the vault and of the items added so far
 	for _, e := range entries {
 		values[e.item.Name] = sameness(e.item)
