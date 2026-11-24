@@ -20,12 +20,11 @@
   <img src="docs/screenshots/landing.png" alt="Keyfold product page" width="860">
 </p>
 
-A Go server stores encrypted files only, a Go CLI (`kf`) hands secrets to
-scripts without ever printing them to a terminal, and a React web UI manages
-logins, API tokens, notes and SSH keys. An MCP server lets AI agents list and
-generate secrets without ever seeing a value. All of them share one vault.
-It listens on `127.0.0.1`; your other devices can reach it through a TLS reverse
-proxy (`-allowed-hosts`), on a network you trust only (see [Not done](#not-done)).
+A Go server stores encrypted vault items and attachments, a Go CLI (`kf`) passes
+stored values to scripts, and a React web UI manages logins, API tokens, notes and
+SSH keys. MCP tools for AI agents list items and generate secrets without returning
+their values. All clients share one vault. The server speaks plain HTTP on loopback
+by default. Other devices connect through a TLS reverse proxy on the same machine.
 
 ## Screenshots
 
@@ -48,8 +47,10 @@ The screenshots use a demo vault filled with fake items.
   fields, attachments, history), a generator, a health dashboard.
 - **AI agents:** `kf mcp` lists items, generates secrets and reports vault
   health, never returning a value.
-- **Import and export:** Bitwarden JSON, 1Password 1pux, CSV.
-- **Second factor:** optional TOTP before the encrypted identity is handed out.
+- **Import:** Bitwarden JSON, 1Password 1pux, CSV. **Export:** Keyfold JSON, Bitwarden JSON.
+- **Second factor:** TOTP is required for encrypted identity downloads from other devices.
+  Direct loopback access can use the vault with TOTP off. With TOTP on, downloads
+  require a valid code or a live session.
 
 ## Layout
 
@@ -62,13 +63,20 @@ packages/vault-core/  TypeScript crypto, API client, statistics, generator,
                       TOTP and breach check, shared by the TypeScript clients
 internal/        shared Go packages: vault, store, api, logger, agent,
                  transfer (import and export formats), wordlist
+internal/hosts/  host validation helpers, local requests and client addresses
+internal/version/ build version and commit
+packaging/       container, Compose example with Caddy, systemd units and backup timer
 tools/interop/   Go helper for the Go/browser encryption interop test
 ```
 
 One Go module (`go.mod`) and one Bun workspace (`package.json`, `bun.lock`)
 at the root. `make help` lists every command.
 
+`make deploy-dry-run` and `make deploy-prod` require `deploy/prod`, an operator-local directory excluded from Git.
+
 ## Server
+
+The server is Unix-only and tested on Linux. `kf` builds for Linux and macOS.
 
 ```sh
 go run ./apps/keyfold-server                      # listens on 127.0.0.1:8717, data in ./data
@@ -104,14 +112,15 @@ development, `apps/web/vite.config.ts` proxies `/api` to `127.0.0.1:8717`.
 `make dev` starts the server and the UI dev server together. `make` alone
 lists every target.
 
-Logs go to stdout, one line per request with a `requestId` that is also sent
-as the `X-Request-Id` header. They are JSON by default. `KEYFOLD_ENV=development`
-(set by `make dev`) prints colored one-line logs, with `NO_COLOR=1` to remove
-the colors. Both formats include the method, path, status, duration and client IP
-(`client`), plus the matched route when available. Logs omit the query string,
-raw headers and body.
+Access logs go to stdout in JSON by default. Each access line includes the method,
+path, status, duration, client IP, request ID (`requestId`, also returned as
+`X-Request-Id`) and matched route pattern when available. Access logs omit raw
+headers, request bodies and query strings. An internal error also logs the error
+text, which can include file paths or operating system errors, with the same request ID.
+`KEYFOLD_ENV=development` (set by `make dev`) prints colored lines and includes
+successful liveness probes at debug level. `NO_COLOR=1` removes the colors.
 
-On first start with an empty data directory, the server logs a single-use install token once as `installToken`.
+Each time it starts before the vault is initialized, the server logs a single-use install token as `installToken`.
 Vault creation requires `X-Install-Token` if the connection or host is non-loopback or the request carries a forwarding header.
 Direct loopback creation with a loopback host and no forwarding headers needs no token.
 Creating the vault clears the token, and restarting before creation logs a new one.
@@ -134,7 +143,7 @@ the server log.
 |---|---|
 | `kf version` | Prints the build version and commit (if available) without a server or agent. |
 | `kf init` | Asks the master password twice (no echo) and creates the vault. |
-| `kf unlock [-ttl 1h]` | Asks the master password, decrypts the identity and starts a background agent on `$XDG_RUNTIME_DIR/keyfold/agent.sock` (without that variable, as on macOS: `keyfold-<uid>/agent.sock` in the temp directory). |
+| `kf unlock [-ttl 1h]` | Asks for the master password and a code if TOTP is enabled, decrypts the identity and starts a background agent on `$XDG_RUNTIME_DIR/keyfold/agent.sock` (if unset, `keyfold-<uid>/agent.sock` in the temp directory). |
 | `kf lock` | Stops the agent. |
 | `kf get <name>` | Prints the value and a newline to stdout. Refused (exit 1) when stdout is a terminal. |
 | `kf set <name> [-kind K] [-note N]` | Reads the value from stdin (no echo on a terminal; one trailing newline is dropped). Kinds: `login` (default), `token`, `note`, `identity`, `ssh-key`, `ssh-passphrase`. An existing item gets the new value and keeps every field no flag sets; the old value goes to its history (20 values kept). |
@@ -185,10 +194,9 @@ authenticated `GET /api/v1/health`, which sees ciphertext only), attachment
 files no item lists, and the dashboard indicators of the vault.
 The endpoint also reports the server's build version in `version`.
 
-A new vault needs a master password of at least 16 characters, in the web UI
-and in `kf init`: the encrypted identity can be downloaded by anyone who
-reaches the server, so the master password is the only barrier against an
-offline attack.
+A new vault needs a master password of at least 16 characters in the web UI
+and in `kf init`. Anyone with a copy of the encrypted identity can try master
+passwords offline.
 The creation form asks for the install token on a non-loopback host or when
 the server rejects creation because the token is missing or incorrect.
 
@@ -201,7 +209,7 @@ An item sheet holds an identifier, the secret, web addresses, a TOTP secret
 (the current code shows with its countdown), custom fields (hidden or not),
 a note, a folder, a favorite flag, attachments and the 20 previous values,
 each one restorable. The generator makes 24 character passwords or 6 word EFF
-passphrases. A copied secret is cleared from the clipboard after 30 s.
+passphrases. The web UI tries to clear a copied secret from the clipboard after 30 s.
 
 Attachments are encrypted in the browser with age, like items, and stored apart
 in `data/blobs/` through `PUT /api/v1/blobs/{id}` (raw age file, streamed, up to
@@ -238,12 +246,13 @@ vault or in Settings (`/personal/settings`, bottom of the sidebar), where the
 master password can also be changed. TOTP is optional for direct local access.
 
 - With TOTP on, retrieving the encrypted identity requires a valid code or a
-  live session.
-  Unlocking in the browser and `kf unlock` ask for the code. `kf get`, `set`
-  and `kf mcp` do not: they use the agent, already unlocked.
-- A code works once across all clients. Five wrong codes in a row lock TOTP
-  checks for that client's IP address for 15 minutes.
-- Remote clients share a per-IP budget of 60 calls per minute across status,
+  live session. The browser asks for a code when it needs to download the identity,
+  and `kf unlock` asks for one. `kf get`, `kf set` and `kf mcp` use the unlocked agent.
+- The server rejects reused TOTP time steps across all clients and keeps the
+  last accepted step in memory. After a restart, a code can be accepted again
+  if it is still within the accepted window. Five wrong or replayed codes in
+  a row lock TOTP checks for that client for 15 minutes.
+- Each remote IP has one budget of 60 calls per minute across status,
   init, identity retrieval, challenge and session. Direct requests to a loopback
   host from a loopback connection without forwarding headers are exempt from
   this call limit and have a separate TOTP failure count and lockout. TOTP
@@ -297,26 +306,25 @@ claude mcp add keyfold -- "$PWD/bin/kf" mcp
   that already holds the decrypted identity can answer a challenge and start a
   new session without a code. An unlocked remote client can turn TOTP off with a
   valid code.
-- API access needs a session token, obtained by decrypting a random challenge
-  with the identity. Sessions expire after 15 minutes of inactivity or 12 hours
-  from creation, whichever comes first. Tokens and challenges live in server
-  memory only, so a server restart locks every client.
-- Every response carries a Content-Security-Policy (own files only, plus the
-  breach check API; no inline script), `X-Frame-Options: DENY`,
-  `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`. API
-  answers are sent with `Cache-Control: no-store`. On a declared host
-  (`-allowed-hosts`), `Strict-Transport-Security` is added.
+- To access protected API routes, decrypt a random challenge with the vault
+  identity to obtain a session token. A challenge expires after 60 seconds.
+  Sessions expire after 15 minutes of inactivity or 12 hours from creation,
+  whichever comes first. The server keeps challenges and sessions in memory
+  and loses them on restart.
+- Responses that pass the host check carry a Content-Security-Policy that blocks
+  inline scripts, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff` and
+  `Referrer-Policy: no-referrer`. API responses also carry `Cache-Control: no-store`.
+  Declared non-loopback hosts receive `Strict-Transport-Security`.
 - The CLI agent receives the identity through a pipe, never argv or env, and
   serves it on a `0600` socket in a `0700` directory. It exits after its TTL or
   on `kf lock`. The web UI keeps the identity and token in memory only.
 
 ## Not done
 
-- TLS: the server speaks plain HTTP. To reach it from another device, put a TLS
-  reverse proxy in front of it and declare its name with `-allowed-hosts`.
-- Hardening for an untrusted network: five wrong TOTP codes from anyone lock
-  every check. Keep it off the internet.
-- Hosting: see [packaging/](packaging/) for the container, reverse proxy and systemd unit.
+- The server relies on a same-machine reverse proxy for TLS. [packaging/](packaging/)
+  includes a container, a Compose example with Caddy and a systemd unit.
+- The deployment kit is for private networks. Restrict access to devices on a
+  network you trust.
 - Off-machine backups: [packaging/](packaging/) provides a timer and local
   rotation. The operator copies archives off the machine.
 
