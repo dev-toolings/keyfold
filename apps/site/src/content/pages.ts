@@ -627,7 +627,7 @@ const mcp: DocPage = {
 
 const selfHosting: DocPage = {
   key: "self-hosting",
-  updated: "2026-11-24",
+  updated: "2026-11-25",
   content: {
     en: {
       slug: "self-hosting",
@@ -759,6 +759,10 @@ const selfHosting: DocPage = {
             {
               code: 'backup_dir=$(mktemp -d "$HOME/keyfold-backup.XXXXXXXX") &&\nstaged_archive="/data/$(basename "$backup_dir").tar" &&\ndocker compose -f packaging/compose.yml exec -T vault keyfold-server -data /data -backup "$staged_archive" &&\ndocker compose -f packaging/compose.yml cp "vault:$staged_archive" "$backup_dir/vault.tar" &&\nchmod 600 "$backup_dir/vault.tar" &&\ndocker compose -f packaging/compose.yml exec -T vault rm "$staged_archive"',
             },
+            {
+              p: "If a step fails after `staged_archive` is set, run this cleanup command in the same shell before retrying the backup.",
+            },
+            { code: 'docker compose -f packaging/compose.yml exec -T vault rm -f "$staged_archive"' },
             {
               p: "The archive contains the encrypted identity, items and attachments, plus the public recipient, the layout version and `totp.json` in clear if TOTP is configured. An online backup reads whole files, but a concurrent attachment deletion can leave an archived item missing its attachment. Pause writes while backing up before an update. Copy archives regularly to storage off the machine with restricted access.",
             },
@@ -945,6 +949,10 @@ const selfHosting: DocPage = {
             {
               code: 'backup_dir=$(mktemp -d "$HOME/keyfold-backup.XXXXXXXX") &&\nstaged_archive="/data/$(basename "$backup_dir").tar" &&\ndocker compose -f packaging/compose.yml exec -T vault keyfold-server -data /data -backup "$staged_archive" &&\ndocker compose -f packaging/compose.yml cp "vault:$staged_archive" "$backup_dir/vault.tar" &&\nchmod 600 "$backup_dir/vault.tar" &&\ndocker compose -f packaging/compose.yml exec -T vault rm "$staged_archive"',
             },
+            {
+              p: "Si une étape échoue après la définition de `staged_archive`, lancez cette commande de nettoyage dans le même terminal avant de relancer la sauvegarde.",
+            },
+            { code: 'docker compose -f packaging/compose.yml exec -T vault rm -f "$staged_archive"' },
             {
               p: "L'archive contient l'identité, les éléments et les pièces jointes chiffrés, ainsi que le destinataire public, la version du format de stockage et `totp.json` en clair si le TOTP est configuré. Une sauvegarde à chaud lit des fichiers entiers, mais si une pièce jointe est supprimée en même temps, elle peut manquer à un élément archivé. Suspendez les écritures pendant la sauvegarde qui précède une mise à jour. Copiez régulièrement les archives ailleurs que sur la machine, dans un espace de stockage à accès restreint.",
             },
