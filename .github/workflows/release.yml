@@ -1,4 +1,4 @@
-# Run check, image-build, release, then image. A failed workflow can be rerun in full.
+# Run release-tag, check, image-build, release, then image. A failed workflow can be rerun in full.
 # Pushing architecture build tags and running docker buildx imagetools create are safe to repeat.
 name: release
 
@@ -19,10 +19,11 @@ env:
   REPOSITORY: ${{ github.repository }}
 
 jobs:
-  check:
+  release-tag:
     runs-on: ubuntu-latest
-    outputs:
-      commit: ${{ steps.commit.outputs.short_sha }}
+    permissions:
+      # GitHub only exposes draft releases with push access.
+      contents: write
     steps:
       - name: Validate release tag
         shell: bash
@@ -32,6 +33,40 @@ jobs:
             printf 'Invalid release tag: %s (expected vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-SUFFIX)\n' "$RELEASE_TAG" >&2
             exit 1
           fi
+      # Drafts are managed manually. Stop before building and allow replays of published releases.
+      - &check_release_state
+        name: Check release state
+        id: release_state
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # An empty match means missing only after every page was fetched successfully.
+          if ! is_draft=$(gh api --paginate "repos/$REPOSITORY/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"$RELEASE_TAG\") | .draft"); then
+            printf 'Could not look up release %s.\n' "$RELEASE_TAG" >&2
+            exit 1
+          fi
+          case "$is_draft" in
+            true)
+              printf 'Release %s is a draft. Resolve the draft manually before rerunning this workflow.\n' "$RELEASE_TAG" >&2
+              exit 1
+              ;;
+            false) exists=true ;;
+            '') exists=false ;;
+            *)
+              printf 'Unexpected release state for %s.\n' "$RELEASE_TAG" >&2
+              exit 1
+              ;;
+          esac
+          printf 'exists=%s\n' "$exists" >> "$GITHUB_OUTPUT"
+
+  check:
+    needs: release-tag
+    runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.commit.outputs.short_sha }}
+    steps:
       # Actions are pinned to a commit: a moved tag cannot change what runs here.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -108,14 +143,17 @@ jobs:
           done
           cd "$output" || exit 1
           sha256sum -- ./*.tar.gz > checksums.txt
+      # Check again for a draft created while the builds ran.
+      - *check_release_state
       - name: Publish GitHub release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_EXISTS: ${{ steps.release_state.outputs.exists }}
         run: |
           cd "$RUNNER_TEMP/keyfold-release" || exit 1
           notes="$RUNNER_TEMP/keyfold-release-notes.md"
-          if gh release view "$RELEASE_TAG" --repo "$REPOSITORY" > /dev/null 2>&1; then
+          if [[ "$RELEASE_EXISTS" == true ]]; then
             gh release upload "$RELEASE_TAG" ./*.tar.gz checksums.txt --repo "$REPOSITORY" --clobber
             gh release edit "$RELEASE_TAG" --repo "$REPOSITORY" --notes-file "$notes"
           else
