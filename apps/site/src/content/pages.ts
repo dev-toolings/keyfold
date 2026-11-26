@@ -338,7 +338,10 @@ const cli: DocPage = {
                     "Prints a random password, or a passphrase of `N` words from the EFF large wordlist. Stores nothing: pipe it into `kf set`.",
                   ],
                   ["`kf totp <name>`", "Prints the item's current TOTP code."],
-                  ["`kf list`", "Names and kinds, never values."],
+                  [
+                    "`kf list`",
+                    "Prints name, kind, project and environment in four tab-separated columns. Unset fields leave empty columns. Values are never printed.",
+                  ],
                   ["`kf rm <name>`", "Deletes an item and its attachments."],
                   [
                     "`kf migrate [-apply]`",
@@ -443,7 +446,10 @@ const cli: DocPage = {
                     "Affiche un mot de passe aléatoire, ou une phrase de passe de `N` mots tirés de la grande liste EFF. Ne stocke rien : redirigez-le vers `kf set`.",
                   ],
                   ["`kf totp <name>`", "Affiche le code TOTP courant de l'élément."],
-                  ["`kf list`", "Les noms et les types, jamais les valeurs."],
+                  [
+                    "`kf list`",
+                    "Affiche le nom, le type, le projet et l'environnement dans quatre colonnes séparées par des tabulations. Les champs absents laissent des colonnes vides. Les valeurs ne sont jamais affichées.",
+                  ],
                   ["`kf rm <name>`", "Supprime un élément et ses pièces jointes."],
                   [
                     "`kf migrate [-apply]`",
@@ -494,9 +500,9 @@ const mcp: DocPage = {
       nav: "MCP",
       title: "MCP server: a secrets vault for AI agents | Keyfold",
       description:
-        "kf mcp gives an AI agent three tools: list items, create a generated secret, report vault health. No tool returns a secret value, and none edits or deletes.",
+        "kf mcp gives an AI agent four tools: list items, create a generated secret, import a declared env file, report vault health. No tool returns a secret value, and none edits or deletes.",
       h1: "MCP server for AI agents",
-      lede: "`kf mcp` is a Model Context Protocol server built into the Keyfold command line. An AI agent can list the vault, create a generated secret and read the vault's health, and no tool ever returns a secret value.",
+      lede: "`kf mcp` is a Model Context Protocol server built into the Keyfold command line. An AI agent can list the vault, create a generated secret, import an env file you declared and read the vault's health, and no tool ever returns a secret value.",
       sections: [
         {
           id: "tools",
@@ -506,10 +512,17 @@ const mcp: DocPage = {
               table: {
                 head: ["Tool", "What it returns or does"],
                 rows: [
-                  ["`list_items`", "The name, kind, creation date and last modification date of each item."],
+                  [
+                    "`list_items`",
+                    "The name, kind, optional project and environment, and creation and last modification dates of each item.",
+                  ],
                   [
                     "`generate_item`",
                     "Creates an item holding a random secret, generated and encrypted locally. It refuses a name that already exists.",
+                  ],
+                  [
+                    "`import_env`",
+                    "Copies variables of a remote env file into items named `<source>.<KEY>`. Declare the source in `~/.config/keyfold/sources.json` and set optional `project` and `environment` fields for new items. Allowed environments are `prod`, `preprod`, and `local`. Items with an environment use encrypted format v5. kf reads the file over ssh, encrypts the values locally, and returns a status per key only. It never overwrites an item.",
                   ],
                   [
                     "`vault_health`",
@@ -540,6 +553,9 @@ const mcp: DocPage = {
               p: "`kf mcp` serves its tools on stdin and stdout. It uses the local agent, so run `kf unlock` first. To register it in Claude Code, from the repository, after `make build`:",
             },
             { code: 'claude mcp add keyfold -- "$PWD/bin/kf" mcp' },
+            {
+              p: "Code mode: `kf mcp -code-mode` serves two tools instead of four. `search` describes the functions of a `kf` object (the same operations as the tools), and `execute` runs JavaScript that calls them, so one call can chain several operations and return only what the agent needs. The interpreter sees `kf` and `console.log` only: no file, network or process access, 30 seconds and 64 KiB at most.",
+            },
           ],
         },
         {
@@ -559,9 +575,9 @@ const mcp: DocPage = {
       nav: "MCP",
       title: "Serveur MCP : un coffre de secrets pour agents IA | Keyfold",
       description:
-        "kf mcp donne trois outils à un agent IA : lister, créer un secret généré, lire l'état du coffre. Aucun outil ne renvoie de valeur ni ne modifie rien.",
+        "kf mcp donne quatre outils à un agent IA : lister, créer un secret généré, importer un fichier env déclaré, lire l'état du coffre. Aucun outil ne renvoie de valeur ni ne modifie rien.",
       h1: "Serveur MCP pour agents IA",
-      lede: "`kf mcp` est un serveur Model Context Protocol intégré à la ligne de commande de Keyfold. Un agent IA peut lister le coffre, créer un secret généré et lire l'état du coffre, et aucun outil ne renvoie jamais la valeur d'un secret.",
+      lede: "`kf mcp` est un serveur Model Context Protocol intégré à la ligne de commande de Keyfold. Un agent IA peut lister le coffre, créer un secret généré, importer un fichier env que vous avez déclaré et lire l'état du coffre, et aucun outil ne renvoie jamais la valeur d'un secret.",
       sections: [
         {
           id: "outils",
@@ -573,11 +589,15 @@ const mcp: DocPage = {
                 rows: [
                   [
                     "`list_items`",
-                    "Le nom, le type, la date de création et la date de dernière modification de chaque élément.",
+                    "Le nom, le type, le projet et l'environnement s'ils sont renseignés, ainsi que les dates de création et de dernière modification de chaque élément.",
                   ],
                   [
                     "`generate_item`",
                     "Crée un élément contenant un secret aléatoire, généré et chiffré en local. Il refuse un nom déjà pris.",
+                  ],
+                  [
+                    "`import_env`",
+                    "Copie les variables d'un fichier env distant dans des éléments nommés `<source>.<KEY>`. Déclarez la source dans `~/.config/keyfold/sources.json` et renseignez les champs facultatifs `project` et `environment` pour les nouveaux éléments. Les environnements autorisés sont `prod`, `preprod` et `local`. Les éléments avec un environnement utilisent le format chiffré v5. kf lit le fichier par ssh, chiffre les valeurs en local et ne renvoie qu'un statut par clé. Il n'écrase jamais un élément.",
                   ],
                   [
                     "`vault_health`",
@@ -608,6 +628,9 @@ const mcp: DocPage = {
               p: "`kf mcp` sert ses outils sur l'entrée et la sortie standard. Il passe par l'agent local : lancez d'abord `kf unlock`. Pour l'enregistrer dans Claude Code, depuis le dépôt, après `make build` :",
             },
             { code: 'claude mcp add keyfold -- "$PWD/bin/kf" mcp' },
+            {
+              p: "Code mode : `kf mcp -code-mode` sert deux outils au lieu de quatre. `search` décrit les fonctions d'un objet `kf` (les mêmes opérations que les outils), et `execute` exécute du JavaScript qui les appelle : un seul appel enchaîne plusieurs opérations et ne renvoie que ce dont l'agent a besoin. L'interpréteur ne voit que `kf` et `console.log` : ni fichier, ni réseau, ni processus, 30 secondes et 64 Kio au plus.",
+            },
           ],
         },
         {
@@ -739,7 +762,7 @@ const selfHosting: DocPage = {
             },
             { code: "export KEYFOLD_SERVER=https://vault.example.com\nkf version\nkf unlock\nkf list" },
             {
-              p: "`kf version` prints the local build version and commit, if available. `kf unlock` asks for your master password and TOTP code, then starts a local background agent that holds the decrypted identity. `kf list` uses that agent to access the vault and lists item names and kinds. Run `kf lock` to stop the agent when you finish.",
+              p: "`kf version` prints the local build version and commit, if available. `kf unlock` asks for your master password and TOTP code, then starts a local background agent that holds the decrypted identity. `kf list` uses that agent to access the vault and prints each item's name, kind, project and environment. Run `kf lock` to stop the agent when you finish.",
             },
           ],
         },
@@ -929,7 +952,7 @@ const selfHosting: DocPage = {
             },
             { code: "export KEYFOLD_SERVER=https://vault.example.com\nkf version\nkf unlock\nkf list" },
             {
-              p: "`kf version` affiche la version locale et le commit, s'il est disponible. `kf unlock` demande votre mot de passe principal et votre code TOTP, puis lance un agent local en arrière-plan qui conserve l'identité déchiffrée. `kf list` utilise cet agent pour accéder au coffre et affiche les noms et les types des éléments. Lancez `kf lock` pour arrêter l'agent quand vous avez terminé.",
+              p: "`kf version` affiche la version locale et le commit, s'il est disponible. `kf unlock` demande votre mot de passe principal et votre code TOTP, puis lance un agent local en arrière-plan qui conserve l'identité déchiffrée. `kf list` utilise cet agent pour accéder au coffre et affiche le nom, le type, le projet et l'environnement de chaque élément. Lancez `kf lock` pour arrêter l'agent quand vous avez terminé.",
             },
           ],
         },

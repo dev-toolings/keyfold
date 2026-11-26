@@ -13,14 +13,34 @@ C_WARN    := \033[33m
 C_ERR     := \033[31m
 C_RESET   := \033[0m
 
-.PHONY: help install dev server web-dev site-dev build image web-build site-build fmt vet test typecheck lint ts-test check deploy-dry-run deploy-prod clean
+.PHONY: help install seed reset dev server web-dev site-dev build image web-build site-build fmt vet test typecheck lint ts-test check deploy-dry-run deploy-prod clean
 
 # ─── Install / Setup ──────────────────────────────────────────────────────────
 
-install: ## Download Go modules and web packages
+install: ## Check the toolchain, then install and verify the locked Go modules and web packages
+	@missing=""; for tool in go gofmt bun; do \
+		command -v $$tool >/dev/null 2>&1 || missing="$$missing $$tool"; \
+	done; \
+	if [ -n "$$missing" ]; then \
+		printf "$(C_ERR)[make] missing tools:%s$(C_RESET)\n" "$$missing"; exit 1; \
+	fi
+	@command -v shuttle >/dev/null 2>&1 || \
+		printf "$(C_WARN)[make] shuttle not found: only the deploy targets need it$(C_RESET)\n"
+	@go version
+	@printf "bun version %s\n" "$$(bun --version)"
 	@go mod download
-	@bun install
-	@printf "$(C_OK)[make] dependencies installed$(C_RESET)\n"
+	@go mod verify
+	@bun install --frozen-lockfile
+	@printf "$(C_OK)[make] dependencies installed and verified$(C_RESET)\n"
+
+seed reset: export KEYFOLD_DEV_DATA = $(DATA)
+
+seed: ## Create a local demo vault with fake entries (DATA; offers to stop a running make dev)
+	@go run ./tools/dev-vault seed
+	@printf "$(C_OK)[make] demo vault ready$(C_RESET)\n"
+
+reset: ## Empty the local vault after confirmation (DATA; offers to stop a running make dev)
+	@go run ./tools/dev-vault reset
 
 # ─── Run ──────────────────────────────────────────────────────────────────────
 

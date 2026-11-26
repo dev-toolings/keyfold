@@ -35,7 +35,7 @@
 
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    @apply border-border outline-ring/50 scrollbar-thin scrollbar-thumb-muted-foreground scrollbar-track-transparent;
   }
   body {
     @apply bg-background text-foreground;
@@ -165,6 +165,12 @@
 }
 
 /* Headings: 40/44 on phones, 78/85.8 and 60/66 on desktop. */
+.lp-h1,
+.lp-h2 {
+  /* Each line of a headline wraps evenly instead of leaving one word behind. */
+  text-wrap: balance;
+}
+
 .lp-h1 {
   font-size: 40px;
   font-weight: 600;
@@ -243,14 +249,14 @@
 }
 
 .lp-btn:focus-visible,
-.lp-arrow:focus-visible {
+.lp-tab:focus-visible,
+.lp [role="tabpanel"]:focus-visible {
   outline: 2px solid var(--lp-blue);
   outline-offset: 3px;
 }
 
 /* Press feedback: the button gives a little under the finger. */
-.lp-btn:active,
-.lp-arrow:active:not(:disabled) {
+.lp-btn:active {
   transform: scale(0.97);
 }
 
@@ -274,8 +280,8 @@
     background: #f0f0f0;
   }
 
-  .lp-arrow:hover:not(:disabled, :active) {
-    transform: scale(1.06);
+  .lp-tab:hover:not([aria-selected="true"]) {
+    color: var(--lp-ink);
   }
 
   /* The icon leans the way it points. */
@@ -288,11 +294,10 @@
   }
 }
 
-/* The tilted blue label over the headline. */
+/* The tilted blue label, centred above the headline at every width: lower, it would cover a word. */
 .lp-badge {
   position: absolute;
-  /* Phones wrap the headline over four lines: the label sits above it there. */
-  top: -34px;
+  top: -40px;
   left: 50%;
   display: inline-flex;
   height: 28px;
@@ -315,15 +320,9 @@
     inset 0 0.5px 0.5px rgb(255 255 255 / 0.25);
 }
 
-@media (min-width: 810px) {
-  .lp-badge {
-    top: 40px;
-  }
-}
-
 @media (min-width: 1200px) {
   .lp-badge {
-    top: 52px;
+    top: -52px;
     height: 34px;
     padding: 0 10px;
     font-size: 14px;
@@ -379,29 +378,60 @@
   color: #fff;
 }
 
-.lp-arrow {
-  display: grid;
-  width: 40px;
-  height: 40px;
-  place-items: center;
-  border-radius: 999px;
-  background: #fff;
-  box-shadow:
-    0 0 0 1px rgb(0 0 0 / 0.04),
-    0 4px 12px rgb(0 0 0 / 0.06);
+/* Feature tabs: a hairline on top of each, ink on the selected one, so the row reads as
+   four columns of the page grid. */
+.lp-tab {
+  display: flex;
+  min-height: 56px;
+  align-items: center;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 2px solid rgb(28 28 28 / 0.1);
+  color: var(--lp-ink-soft);
+  font-weight: 500;
+  text-align: left;
   transition:
-    opacity 200ms ease,
-    transform 160ms var(--lp-ease-out);
+    color 200ms ease,
+    border-color 200ms ease;
 }
 
-.lp-arrow:disabled {
-  box-shadow: none;
-  opacity: 0.35;
+.lp-tab[aria-selected="true"] {
+  border-color: var(--lp-ink);
+  color: var(--lp-ink);
 }
 
-.lp-arrow svg {
+.lp-tab svg {
+  display: none;
   width: 18px;
   height: 18px;
+  flex-shrink: 0;
+}
+
+/* Phones fit two titles per row only without their icons. */
+@media (min-width: 640px) {
+  .lp-tab svg {
+    display: block;
+  }
+}
+
+/* Stack strip: six cells edge to edge on the grid, separated by hairlines drawn by the gaps. */
+.lp-stack {
+  gap: 1px;
+  border-block: 1px solid rgb(28 28 28 / 0.1);
+  background: rgb(28 28 28 / 0.1);
+}
+
+.lp-stack li {
+  display: flex;
+  height: 96px;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: var(--lp-bg);
+  color: rgb(28 28 28 / 0.8);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.3px;
 }
 
 /* FAQ: native <details>, one question per row, the chevron turns when open. */
@@ -622,8 +652,7 @@
     transition: opacity 300ms ease;
   }
 
-  .lp-btn:active,
-  .lp-arrow:active:not(:disabled) {
+  .lp-btn:active {
     transform: none;
   }
 

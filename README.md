@@ -162,7 +162,7 @@ the server log.
 | `kf totp <name>` | Prints the item's current TOTP code. |
 | `kf export [-format keyfold\|bitwarden-json] [-o file] (-encrypt \| -plaintext)` | Exports every item. `-encrypt` asks a passphrase (16 characters at least) and writes an age file; `-plaintext` must be explicit. Never written to a terminal; `-o` files are `0600`. Attachments are left out (a warning counts them). |
 | `kf import -format keyfold\|bitwarden-json\|1password-1pux\|csv <file>` | Adds the items of an export (an `export -encrypt` file asks its passphrase). An item already present is skipped; another one with a taken name gets ` (2)`. Payment cards are skipped and listed. CSV reads the Chrome, Firefox, Bitwarden and 1Password headers. |
-| `kf list` | Names and kinds, never values. |
+| `kf list` | Prints name, kind, project and environment in four tab-separated columns. Unset fields leave empty columns. Values are never printed. |
 | `kf rm <name>` | Deletes an item and its attachments. |
 | `kf migrate [-apply]` | Lists the items stored in an older format; `-apply` rewrites them in the current one. |
 
@@ -215,7 +215,8 @@ other in silence.
 
 An item sheet holds an identifier, the secret, web addresses, a TOTP secret
 (the current code shows with its countdown), custom fields (hidden or not),
-a note, a folder, a favorite flag, attachments and the 20 previous values,
+a note, a folder, a project, a specialty, languages, tags, a favorite flag,
+attachments and the 20 previous values,
 each one restorable. The generator makes 24 character passwords or 6 word EFF
 passphrases. The web UI tries to clear a copied secret from the clipboard after 30 s.
 
@@ -230,9 +231,18 @@ without a TOTP secret, and known breaches through the Have I Been Pwned range
 API. That last check is off by default; once allowed in Settings, it runs on
 request and sends only the first 5 characters of each password's SHA-1.
 
-Items are JSON in format v2 (`internal/vault/vault.go`, mirrored in
-`packages/vault-core/src/item.ts`): v1 items are still read, shown upgraded,
-and never written; the web UI shows how many remain until `kf migrate -apply`.
+The encrypted item JSON uses v5 for items with an environment (`prod`,
+`preprod`, or `local`). These items need a v5-capable client. Items without an
+environment use v3 when they have a project, specialty, languages, or tags, and
+v2 otherwise. The vault's filters and search use the v3 fields after decryption
+in the browser. Native Keyfold exports preserve the classification fields.
+Clients still read v1 items and show them upgraded in memory. The web UI shows
+how many `kf migrate -apply` can rewrite.
+
+The web sidebar can create a project before it contains any items. Projects
+store names and classification in separate encrypted v4 records, and each item
+can be left unassigned. Native Keyfold exports include projects. Use a project-
+capable client or CLI for a vault that contains them.
 
 The data directory holds its layout version in `version` (1 today, written by
 the first server that serves it): a server refuses a directory written by a
@@ -277,12 +287,30 @@ password.
 
 ## MCP server for AI agents
 
-`kf mcp` serves three tools on stdin/stdout. It uses the local agent, so run
+`kf mcp` serves four tools on stdin/stdout. It uses the local agent, so run
 `kf unlock` first.
 
-- `list_items`: name, kind, creation and last modification dates.
+- `list_items`: name, kind, optional project and environment, and creation and
+  last modification dates.
 - `generate_item`: creates an item holding a random secret generated and
   encrypted locally. It refuses a name that already exists.
+- `import_env`: copies variables of a remote env file into token items named
+  `<source>.<KEY>`. `source` is an alias you declare in
+  `~/.config/keyfold/sources.json` (mode 600), so the model cannot point kf at
+  another host or file. Set optional `project` and `environment` fields on the
+  source to apply them to each new item. Allowed environments are `prod`,
+  `preprod`, and `local`.
+
+  ```json
+  {"core-pve": {"host": "core-pve", "path": "/opt/core/.env", "sudo": true, "project": "Core", "environment": "preprod"}}
+  ```
+
+  kf reads the file with `ssh -o BatchMode=yes` (`sudo -n cat` when `sudo` is
+  set) and encrypts the values itself. The result holds a status per key only:
+  `imported`, `unchanged`, `conflict` (the item exists with another value and
+  is left alone) or `missing`. Empty `keys` imports the whole file. The file is
+  read as dotenv: quoted values may span lines, and an unterminated quote ends
+  the parse. A failed ssh names a known reason only, never the remote stderr.
 - `vault_health`: the server facts of `/personal/health` and the dashboard
   indicators (stale, reused, short, weak, website without TOTP) as item names.
   `unreadable` lists the ids of the items that could not be decrypted, as
@@ -292,13 +320,30 @@ password.
   holds cases both test suites check.
 
 No tool returns a value or a note, and none edits or deletes: whatever a tool
-returns enters the model's conversation and its transcripts.
+returns enters the model's conversation and its transcripts. A value given to
+a tool would enter them too, which is why `import_env` takes names only.
 
 Register it in Claude Code, from this directory, after `make build`:
 
 ```sh
 claude mcp add keyfold -- "$PWD/bin/kf" mcp
 ```
+
+Code mode: `kf mcp -code-mode` serves two tools instead of four. `search`
+describes the functions of a `kf` object (`listItems`, `vaultHealth`,
+`generateItem`, `importEnv`, the same operations as the tools); `execute` runs
+JavaScript that calls them and returns what the script returns, so one call can
+chain several operations and keep only what the agent needs:
+
+```js
+const r = kf.importEnv({source: "core-pve"});
+return r.keys.filter(k => k.status !== "unchanged");
+```
+
+The interpreter ([goja](https://github.com/dop251/goja), in process) sees `kf`
+and `console.log` only: no file, network or process access. A script stops
+after 30 seconds, and its result and logs are capped at 64 KiB. No function
+returns a value, so no script can either.
 
 ## Security model
 
@@ -327,7 +372,12 @@ claude mcp add keyfold -- "$PWD/bin/kf" mcp
   Declared non-loopback hosts receive `Strict-Transport-Security`.
 - The CLI agent receives the identity through a pipe, never argv or env, and
   serves it on a `0600` socket in a `0700` directory. It exits after its TTL or
-  on `kf lock`. The web UI keeps the identity and token in memory only.
+  on `kf lock`.
+- The web UI keeps the decrypted identity and token in the tab's
+  `sessionStorage` so a reload can resume the session. Locking the vault or
+  receiving a session-expired response clears this data. Browser session
+  restoration can bring back the tab's storage. Scripts running on the vault
+  origin can read it.
 
 ## Not done
 

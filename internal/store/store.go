@@ -100,18 +100,32 @@ var ErrInUse = errors.New("the data directory is in use by another keyfold-serve
 // writes the layout version if it is missing: both are only safe once no other
 // writer can be in the middle of a write.
 func (s *Store) Lock() error {
+	return s.acquireLock(false)
+}
+
+func (s *Store) acquireLock(offline bool) (lockErr error) {
 	f, err := os.OpenFile(filepath.Join(s.dir, lockFile), os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if lockErr != nil {
+			f.Close()
+		}
+	}()
 	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
-		f.Close()
 		if errors.Is(err, unix.EWOULDBLOCK) {
 			return ErrInUse
 		}
 		return err
 	}
-	s.lock = f
+	if !offline {
+		if _, err := os.Lstat(filepath.Join(s.dir, maintenanceFile)); err == nil {
+			return fmt.Errorf("offline maintenance was interrupted in %s: run make reset for that DATA directory", s.dir)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
 	for _, d := range []string{s.dir, filepath.Join(s.dir, itemsDir), filepath.Join(s.dir, blobsDir)} {
 		left, err := filepath.Glob(filepath.Join(d, tmpPattern))
 		if err != nil {
@@ -125,8 +139,11 @@ func (s *Store) Lock() error {
 	}
 	path := filepath.Join(s.dir, versionFile)
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
-		return writeAtomic(path, strings.NewReader(strconv.Itoa(Layout)+"\n"))
+		if err := writeAtomic(path, strings.NewReader(strconv.Itoa(Layout)+"\n")); err != nil {
+			return err
+		}
 	}
+	s.lock = f
 	return nil
 }
 

@@ -216,6 +216,10 @@ func TestMigrateThenSetKeepsFields(t *testing.T) {
 
 	// set changes the value and keeps what it was not asked to change.
 	it.Username = "fake-user"
+	it.Project = "fake-project"
+	it.Specialty = "Backend"
+	it.Languages = []string{"Go", "SQL"}
+	it.Tags = []string{"fake-tag", "fake-other"}
 	etag, _ := item(t, st, id, "fake-old")
 	ct2, err := vault.EncryptItem(it, id.Recipient())
 	if err != nil {
@@ -231,6 +235,10 @@ func TestMigrateThenSetKeepsFields(t *testing.T) {
 	if it.Value != "fake-value-456" || it.Username != "fake-user" || it.Note != "fake-note" || it.Kind != "login" {
 		t.Fatalf("after set: %+v", it)
 	}
+	if it.V != 3 || it.Project != "fake-project" || it.Specialty != "Backend" ||
+		strings.Join(it.Languages, ",") != "Go,SQL" || strings.Join(it.Tags, ",") != "fake-tag,fake-other" {
+		t.Fatalf("classification after set: %+v", it)
+	}
 
 	// Flags do change what they name, and only that.
 	args := []string{"-server", url, "set", "fake-old", "-note", "", "-kind", "token"}
@@ -240,6 +248,18 @@ func TestMigrateThenSetKeepsFields(t *testing.T) {
 	_, it = item(t, st, id, "fake-old")
 	if it.Value != "fake-value-789" || it.Note != "" || it.Kind != "token" || it.Username != "fake-user" {
 		t.Fatalf("after set with flags: %+v", it)
+	}
+}
+
+func TestSetKeepsEnvironment(t *testing.T) {
+	url, st, id := setupVault(t)
+	storeItem(t, url, vault.Item{Name: "fake-token", Kind: "token", Value: "fake-before", Environment: "prod"})
+	var stderr bytes.Buffer
+	if code := run([]string{"-server", url, "set", "fake-token"}, fileWith(t, "fake-after\n"), fileWith(t, ""), &stderr); code != 0 {
+		t.Fatalf("set: exit %d: %s", code, stderr.String())
+	}
+	if _, it := item(t, st, id, "fake-token"); it.Value != "fake-after" || it.Environment != "prod" || it.V != 5 {
+		t.Fatalf("after set: %+v", it)
 	}
 }
 

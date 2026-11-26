@@ -30,8 +30,6 @@ export type Content = {
   sectionLine1: string;
   sectionLine2: string;
   seeVault: string;
-  previous: string;
-  next: string;
   features: Feature[];
   securityTitle: string;
   security: { title: string; text: string }[];
@@ -44,7 +42,7 @@ export type Content = {
   otherLang: { label: string; to: string };
 };
 
-export const STACK = ["age", "Go", "React", "Tailwind CSS", "shadcn/ui", "MCP"];
+export const STACK = ["age", "Go", "React", "Tailwind CSS", "shadcn/ui", "MCP"] as const;
 
 export const CONTENT: Record<Lang, Content> = {
   fr: {
@@ -67,8 +65,6 @@ export const CONTENT: Record<Lang, Content> = {
     sectionLine1: "Quand un fichier de mots",
     sectionLine2: "de passe ne suffit plus.",
     seeVault: "Voir le coffre",
-    previous: "Fonction précédente",
-    next: "Fonction suivante",
     features: [
       {
         id: "dashboard",
@@ -145,7 +141,7 @@ export const CONTENT: Record<Lang, Content> = {
       {
         question: "Un agent IA peut-il l'utiliser sans risque ?",
         answer:
-          "Oui, dans des limites fixées par conception. kf mcp est un serveur MCP à trois outils (list_items, generate_item, vault_health) : aucun ne renvoie une valeur ou une note, aucun ne modifie ni ne supprime un élément. Pour donner un secret à un programme, kf run -env VAR=kf://nom/champ -- commande le place dans l'environnement de la commande, jamais dans ses arguments ni sur disque.",
+          "Oui, dans des limites fixées par conception. kf mcp est un serveur MCP à quatre outils (list_items, generate_item, import_env, vault_health) : aucun ne renvoie une valeur ou une note, aucun ne modifie ni ne supprime un élément. Pour donner un secret à un programme, kf run -env VAR=kf://nom/champ -- commande le place dans l'environnement de la commande, jamais dans ses arguments ni sur disque.",
       },
       {
         question: "Comment importer depuis Bitwarden ou 1Password ?",
@@ -186,8 +182,6 @@ export const CONTENT: Record<Lang, Content> = {
     sectionLine1: "When a password file",
     sectionLine2: "is no longer enough.",
     seeVault: "See the vault",
-    previous: "Previous feature",
-    next: "Next feature",
     features: [
       {
         id: "dashboard",
@@ -264,7 +258,7 @@ export const CONTENT: Record<Lang, Content> = {
       {
         question: "Can AI agents use it safely?",
         answer:
-          "Yes, within limits set by design. kf mcp is an MCP server with three tools (list_items, generate_item, vault_health): none returns a value or a note, and none edits or deletes an item. To hand a secret to a program, kf run -env VAR=kf://name/field -- command puts it in that command's environment, never in its arguments or on disk.",
+          "Yes, within limits set by design. kf mcp is an MCP server with four tools (list_items, generate_item, import_env, vault_health): none returns a value or a note, and none edits or deletes an item. To hand a secret to a program, kf run -env VAR=kf://name/field -- command puts it in that command's environment, never in its arguments or on disk.",
       },
       {
         question: "How do I import from Bitwarden or 1Password?",

@@ -81,7 +81,7 @@ func TestReadRunInject(t *testing.T) {
 
 func TestExportImport(t *testing.T) {
 	url, st, id := setupVault(t)
-	storeItem(t, url, vault.Item{Name: "fake-site", Kind: "login", Value: "fake-pw-123"})
+	storeItem(t, url, vault.Item{Name: "fake-site", Kind: "login", Value: "fake-pw-123", Environment: "prod"})
 	var stderr bytes.Buffer
 
 	// Neither -encrypt nor -plaintext: refused before anything is read.
@@ -113,17 +113,133 @@ func TestExportImport(t *testing.T) {
 	if !strings.Contains(stderr.String(), "1 item(s) imported") {
 		t.Fatalf("stderr %q", stderr.String())
 	}
-	if _, it := item(t, st, id, "fake-site (2)"); it.Value != "fake-pw-456" {
+	if _, it := item(t, st, id, "fake-site (2)"); it.Value != "fake-pw-456" || it.Environment != "prod" {
 		t.Fatalf("renamed item %+v", it)
 	}
 	if entries, _ := st.Items(); len(entries) != 2 {
 		t.Fatalf("%d items, want 2", len(entries))
+	}
+
+	// The same login with a different explicit environment is a separate item.
+	if err := os.WriteFile(file, bytes.Replace(data, []byte(`"prod"`), []byte(`"local"`), 1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := run([]string{"-server", url, "import", "-format", "bitwarden-json", file}, fileWith(t, ""), fileWith(t, ""), &stderr); code != 0 {
+		t.Fatalf("import with a different environment: exit %d: %s", code, stderr.String())
+	}
+	if _, it := item(t, st, id, "fake-site (3)"); it.Value != "fake-pw-123" || it.Environment != "local" {
+		t.Fatalf("after import with a different environment: %+v", it)
+	}
+}
+
+func TestNativeExportImportKeepsEnvironment(t *testing.T) {
+	url, _, _ := setupVault(t)
+	storeItem(t, url, vault.Item{Name: "fake-token", Kind: "token", Value: "fake-value", Environment: "preprod"})
+	var stderr bytes.Buffer
+	file := filepath.Join(t.TempDir(), "export.json")
+	if code := run([]string{"-server", url, "export", "-format", "keyfold", "-plaintext", "-o", file}, fileWith(t, ""), fileWith(t, ""), &stderr); code != 0 {
+		t.Fatalf("export: exit %d: %s", code, stderr.String())
+	}
+
+	url, st, id := setupVault(t)
+	if code := run([]string{"-server", url, "import", "-format", "keyfold", file}, fileWith(t, ""), fileWith(t, ""), &stderr); code != 0 {
+		t.Fatalf("import: exit %d: %s", code, stderr.String())
+	}
+	if _, it := item(t, st, id, "fake-token"); it.Value != "fake-value" || it.Environment != "preprod" || it.V != 5 {
+		t.Fatalf("after import: %+v", it)
+	}
+}
+
+func TestImportKeepsDifferentClassification(t *testing.T) {
+	url, st, id := setupVault(t)
+	storeItem(t, url, vault.Item{Name: "fake-site", Kind: "login", Value: "fake-value"})
+	file := filepath.Join(t.TempDir(), "export.json")
+	if err := os.WriteFile(file, []byte(`[
+		{"v":3,"name":"fake-site","kind":"login","value":"fake-value","project":"fake-project","specialty":"Backend","languages":["Go"],"tags":["fake-tag"]},
+		{"v":5,"name":"fake-site","kind":"login","value":"fake-value","project":"fake-project","specialty":"Backend","languages":["Go"],"tags":["fake-tag"],"environment":"local"}
+	]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"-server", url, "import", "-format", "keyfold", file}
+	for range 2 {
+		var stderr bytes.Buffer
+		if code := run(args, fileWith(t, ""), fileWith(t, ""), &stderr); code != 0 {
+			t.Fatalf("import: exit %d: %s", code, stderr.String())
+		}
+	}
+	_, duplicate := item(t, st, id, "fake-site (2)")
+	if duplicate.Project != "fake-project" || duplicate.Specialty != "Backend" ||
+		strings.Join(duplicate.Languages, ",") != "Go" || strings.Join(duplicate.Tags, ",") != "fake-tag" {
+		t.Fatal("the classified import was lost")
+	}
+	if _, withEnvironment := item(t, st, id, "fake-site (3)"); withEnvironment.Environment != "local" || withEnvironment.V != 5 {
+		t.Fatal("the import with an environment was lost")
+	}
+	if entries, err := st.Items(); err != nil || len(entries) != 3 {
+		t.Fatalf("items after reimport: %d, %v", len(entries), err)
+	}
+}
+
+func TestNativeProjectImportExportSeparatesProjectsFromItems(t *testing.T) {
+	url, st, _ := setupVault(t)
+	stamp := "2026-01-01T00:00:00Z"
+	project := vault.Item{V: vault.ProjectVersion, Kind: vault.ProjectKind, Name: "fake-project", NameKey: "fake-project",
+		Specialty: "Backend", Languages: []string{"Go"}, Tags: []string{"fake-tag"}, CreatedAt: stamp, UpdatedAt: stamp}
+	data, err := json.Marshal([]vault.Item{project})
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(t.TempDir(), "projects.json")
+	if err := os.WriteFile(file, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	args := []string{"-server", url, "import", "-format", "keyfold", file}
+	for range 2 {
+		if code := run(args, fileWith(t, ""), fileWith(t, ""), &stderr); code != 0 {
+			t.Fatalf("import: exit %d: %s", code, stderr.String())
+		}
+	}
+	if records, err := st.Items(); err != nil || len(records) != 1 {
+		t.Fatalf("records after reimport: %d, %v", len(records), err)
+	}
+	list := fileWith(t, "")
+	if code := run([]string{"-server", url, "list"}, fileWith(t, ""), list, &stderr); code != 0 {
+		t.Fatalf("list: exit %d: %s", code, stderr.String())
+	}
+	if data, err := os.ReadFile(list.Name()); err != nil || len(data) != 0 {
+		t.Fatal("a project appeared in the item list")
+	}
+	storeItem(t, url, vault.Item{Name: project.Name, Kind: "login", Value: "fake-value"})
+	output := filepath.Join(t.TempDir(), "vault.json")
+	if code := run([]string{"-server", url, "export", "-plaintext", "-o", output}, fileWith(t, ""), fileWith(t, ""), &stderr); code != 0 {
+		t.Fatalf("export: exit %d: %s", code, stderr.String())
+	}
+	data, err = os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var exported []vault.Item
+	if err := json.Unmarshal(data, &exported); err != nil || len(exported) != 2 || exported[0].Kind != "login" ||
+		exported[1].Kind != vault.ProjectKind || exported[1].Specialty != "Backend" ||
+		strings.Join(exported[1].Languages, ",") != "Go" || strings.Join(exported[1].Tags, ",") != "fake-tag" {
+		t.Fatalf("wrong native export, decode error: %v", err)
+	}
+}
+
+func TestProjectImportRecognizesEquivalentAccents(t *testing.T) {
+	existing := vault.Item{Kind: vault.ProjectKind, Name: "fake-Café", NameKey: "fake-café"}
+	incoming := vault.Item{Kind: vault.ProjectKind, Name: "fake-Cafe\u0301", NameKey: "fake-café"}
+	got, duplicates, err := prepareProjectImports([]vault.Item{incoming}, []vault.Item{existing})
+	if err != nil || len(got) != 0 || duplicates != 1 {
+		t.Fatalf("got %d imports and %d duplicates, err=%v", len(got), duplicates, err)
 	}
 }
 
 func TestUnreadableItemDoesNotHideTheOthers(t *testing.T) {
 	url, st, _ := setupVault(t)
 	storeItem(t, url, vault.Item{Name: "fake-db", Kind: "login", Value: "fake-pw-123"})
+	storeItem(t, url, vault.Item{Name: "fake-token", Kind: "token", Project: "fake-project", Environment: "preprod"})
 	const damaged = "000000000000000000000000000000dd"
 	if err := st.Put(damaged, []byte("not an age file"), ""); err != nil {
 		t.Fatal(err)
@@ -140,7 +256,7 @@ func TestUnreadableItemDoesNotHideTheOthers(t *testing.T) {
 
 	// The list covers a part of the vault only: it says so and exits 3.
 	code, stdout, stderr := kf("list")
-	if code != 3 || stdout != "fake-db\tlogin\n" || !strings.Contains(stderr, damaged) {
+	if code != 3 || stdout != "fake-db\tlogin\t\t\nfake-token\ttoken\tfake-project\tpreprod\n" || !strings.Contains(stderr, damaged) {
 		t.Errorf("list: exit %d, stdout %q, stderr %q", code, stdout, stderr)
 	}
 	// A readable secret is still handed out, and the session still works.
@@ -204,7 +320,7 @@ func TestUnreadableItemDoesNotHideTheOthers(t *testing.T) {
 	// The MCP tools say what they leave out, and refuse to create.
 	ctx := context.Background()
 	serverSide, clientSide := mcp.NewInMemoryTransports()
-	if _, err := newMCPServer(url).Connect(ctx, serverSide, nil); err != nil {
+	if _, err := newMCPServer(url, false).Connect(ctx, serverSide, nil); err != nil {
 		t.Fatal(err)
 	}
 	session, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0"}, nil).Connect(ctx, clientSide, nil)

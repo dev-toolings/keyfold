@@ -1,7 +1,10 @@
 package vault
 
 import (
+	"encoding/json"
+	"maps"
 	"reflect"
+	"strings"
 	"testing"
 
 	"filippo.io/age"
@@ -41,6 +44,79 @@ func TestRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(out, in) {
 		t.Fatalf("got %+v, want %+v", out, in)
+	}
+}
+
+func TestItemEnvironmentRoundTrip(t *testing.T) {
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, project, environment string
+		version                    int
+	}{
+		{name: "plain", version: 2},
+		{name: "project only", project: "fake-project", version: 3},
+		{name: "environment only", environment: "prod", version: 5},
+		{name: "both", project: "fake-project", environment: "preprod", version: 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := Item{V: ItemVersion, Name: "fake-name", Kind: "token", Project: tc.project, Environment: tc.environment}
+			ct, err := EncryptItem(in, id.Recipient())
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, err := DecryptItem(ct, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			in.V = tc.version
+			if !reflect.DeepEqual(out, in) {
+				t.Fatalf("got %+v, want %+v", out, in)
+			}
+		})
+	}
+}
+
+func TestCheckRejectsUnknownEnvironment(t *testing.T) {
+	it := Item{V: environmentItemVersion, Name: "fake-name", Kind: "token", Environment: "staging"}
+	if err := Check(it); err == nil || !strings.Contains(err.Error(), "prod, preprod, local") {
+		t.Fatalf("Check returned %v, want an error listing the allowed environments", err)
+	}
+}
+
+func TestDecryptV5RequiredFields(t *testing.T) {
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := map[string]any{"v": 5, "name": "fake-name", "kind": "token", "value": "", "note": "", "updated_at": "", "environment": nil}
+	for _, field := range []string{"", "name", "kind", "value", "note", "updated_at"} {
+		name := field
+		if name == "" {
+			name = "null environment"
+		}
+		t.Run(name, func(t *testing.T) {
+			record := maps.Clone(valid)
+			delete(record, field)
+			plain, err := json.Marshal(record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ct, err := Encrypt(plain, id.Recipient())
+			if err != nil {
+				t.Fatal(err)
+			}
+			it, err := DecryptItem(ct, id)
+			if field == "" {
+				if err != nil || it.Environment != "" {
+					t.Fatalf("null environment: got %q, %v", it.Environment, err)
+				}
+			} else if err == nil {
+				t.Fatalf("accepted v5 without %s", field)
+			}
+		})
 	}
 }
 

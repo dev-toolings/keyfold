@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"cmp"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -60,12 +61,15 @@ commands:
   import -format keyfold|bitwarden-json|1password-1pux|csv <file>
                              add the items of an export; one already present
                              is skipped, a taken name gets a " (2)" suffix
-  list                       print names and kinds
+  list                       print name, kind, project and environment as tab-separated columns
   rm <name>                  delete an item
   migrate [-apply]           rewrite items in the current format (dry run
                              without -apply)
-  mcp                        serve the MCP tools on stdin/stdout, for AI agents
-                             (list names, generate a secret; never a value)
+  mcp [-code-mode]           serve the MCP tools on stdin/stdout, for AI agents
+                             (list names, generate a secret, import a declared
+                             env file; never a value). -code-mode serves only
+                             search and execute (JavaScript calling the same
+                             operations)
 
 The server URL defaults to $KEYFOLD_SERVER, then http://127.0.0.1:8717.
 For remote init, set $KEYFOLD_INSTALL_TOKEN to the install token from the server log.
@@ -142,7 +146,7 @@ func run(args []string, stdin, stdout *os.File, stderr io.Writer) int {
 	case "migrate":
 		err = cmdMigrate(c, rest, stdout, stderr)
 	case "mcp":
-		err = cmdMCP(c)
+		err = cmdMCP(c, rest)
 	default:
 		fs.Usage()
 		return 2
@@ -177,11 +181,13 @@ const exitPartial = 3
 // client talks to the server API.
 type client struct {
 	base  string
+	ctx   context.Context // bounds the HTTP calls; nil: the client timeout only
 	token string
 	totp  string // sent once with the identity download when the server asks for it
 	// unreadable holds the ids of the items open could not decrypt: a damaged
 	// file, or a format this kf does not know. They are skipped, not fatal.
 	unreadable []string
+	projects   []vault.Item
 }
 
 func (c *client) do(method, path string, in, out any) error {
@@ -204,7 +210,7 @@ func (c *client) doWith(method, path string, hdr http.Header, in, out any) error
 	if u, err := url.Parse(c.base); err != nil || (u.Scheme != "https" && (u.Scheme != "http" || !hosts.Loopback(hosts.Name(u.Host)))) {
 		return fmt.Errorf("server %s: use an https:// URL, plain http is only accepted for a loopback address", c.base)
 	}
-	req, err := http.NewRequest(method, c.base+path, body)
+	req, err := http.NewRequestWithContext(cmp.Or(c.ctx, context.Background()), method, c.base+path, body)
 	if err != nil {
 		return err
 	}
@@ -254,14 +260,35 @@ func (c *client) login(id age.Identity) error {
 	var s struct {
 		Token string `json:"token"`
 	}
-	if err := c.do("POST", "/api/v1/session", map[string]any{"id": ch.ID, "answer": answer}, &s); err != nil {
+	// Under a deadline (MCP), the session request ignores it: cut midway, it
+	// would leave a session whose token nobody holds. Its own 10 s bound keeps
+	// the deadline close. The CLI has no deadline and keeps the HTTP timeout.
+	saved := c.ctx
+	if saved != nil {
+		var cancel context.CancelFunc
+		c.ctx, cancel = context.WithTimeout(context.WithoutCancel(saved), 10*time.Second)
+		defer cancel()
+	}
+	err = c.do("POST", "/api/v1/session", map[string]any{"id": ch.ID, "answer": answer}, &s)
+	c.ctx = saved
+	if err != nil {
 		return err
 	}
 	c.token = s.Token
 	return nil
 }
 
-func (c *client) logout() { c.do("POST", "/api/v1/lock", nil, nil) }
+// logout closes the session even when c.ctx is done, so a script that ran out
+// of time leaves no open session behind; under a deadline it waits 5 s at
+// most. The CLI has no deadline and keeps the HTTP timeout.
+func (c *client) logout() {
+	if c.ctx != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		c.ctx = ctx
+	}
+	c.do("POST", "/api/v1/lock", nil, nil)
+}
 
 type entry struct {
 	id   string
@@ -311,10 +338,15 @@ func (c *client) open() (*age.X25519Identity, []entry, error) {
 		return nil, nil, err
 	}
 	entries := make([]entry, 0, len(raw))
+	c.projects = nil
 	for _, r := range raw {
 		it, err := vault.DecryptItem(r.Ciphertext, id)
 		if err != nil {
 			c.unreadable = append(c.unreadable, r.ID)
+			continue
+		}
+		if it.Kind == vault.ProjectKind {
+			c.projects = append(c.projects, it)
 			continue
 		}
 		entries = append(entries, entry{id: r.ID, etag: r.ETag, item: it})
@@ -649,7 +681,7 @@ func cmdList(c *client, stdout io.Writer) error {
 	sort.Slice(entries, func(i, j int) bool { return entries[i].item.Name < entries[j].item.Name })
 	for _, e := range entries {
 		it, _ := vault.Upgrade(e.item) // same kinds as the web UI and `set -kind`
-		fmt.Fprintf(stdout, "%s\t%s\n", it.Name, it.Kind)
+		fmt.Fprintf(stdout, "%s\t%s\t%s\t%s\n", it.Name, it.Kind, it.Project, it.Environment)
 	}
 	return nil
 }

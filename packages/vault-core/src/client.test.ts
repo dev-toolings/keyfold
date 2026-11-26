@@ -6,11 +6,13 @@ import {
   decryptEntries,
   InstallTokenError,
   isLoopbackHost,
+  LockedError,
   selectSaveTarget,
   VaultClient,
+  type VaultSession,
 } from "./client";
-import { encryptBytes, encryptItem, toBase64 } from "./crypto";
-import type { Entry, Item } from "./item";
+import { encryptBytes, encryptItem, toBase64, wrapIdentity } from "./crypto";
+import type { Entry, Item, Project } from "./item";
 
 test("the page hostname is loopback only for local names and addresses", () => {
   for (const hostname of ["localhost", "127.0.0.1", "127.0.0.2", "127.255.255.255", "::1", "[::1]"]) {
@@ -56,6 +58,79 @@ test.each([
     } else {
       await expect(creation).rejects.not.toBeInstanceOf(InstallTokenError);
     }
+  } finally {
+    fetchMock.mockRestore();
+  }
+});
+
+test("unlock retries a wrong password with the identity already downloaded using TOTP", async () => {
+  const password = "fake-unlock-password";
+  const identity = await generateX25519Identity();
+  const recipient = await identityToRecipient(identity);
+  const wrapped = toBase64(await wrapIdentity(identity, password, 10));
+  const answer = Uint8Array.of(1, 2, 3);
+  const ciphertext = toBase64(await encryptBytes(answer, recipient));
+  const fetchMock = spyOn(globalThis, "fetch")
+    .mockRejectedValue(new Error("Unexpected vault request"))
+    .mockResolvedValueOnce(Response.json({ identity: wrapped, recipient }))
+    .mockResolvedValueOnce(Response.json({ id: "fake-challenge", ciphertext }))
+    .mockResolvedValueOnce(Response.json({ token: "fake-session" }))
+    .mockResolvedValueOnce(Response.json([]));
+  try {
+    const client = new VaultClient();
+    await expect(client.unlock("wrong-password", "123456")).rejects.toThrow("Mot de passe incorrect.");
+    expect(client.isUnlocked()).toBe(false);
+    expect(client.hasDownloadedIdentity()).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get("X-TOTP-Code")).toBe("123456");
+
+    await client.unlock(password);
+    expect(client.isUnlocked()).toBe(true);
+    expect(client.hasDownloadedIdentity()).toBe(false);
+    await client.listItems();
+    expect(fetchMock.mock.calls.map(([url, options]) => [options?.method, url])).toEqual([
+      ["GET", "/api/v1/identity"],
+      ["POST", "/api/v1/challenge"],
+      ["POST", "/api/v1/session"],
+      ["GET", "/api/v1/items"],
+    ]);
+    expect(fetchMock.mock.calls[2]?.[1]?.body).toBe(JSON.stringify({ id: "fake-challenge", answer: toBase64(answer) }));
+    expect(new Headers(fetchMock.mock.calls[3]?.[1]?.headers).get("Authorization")).toBe("Bearer fake-session");
+  } finally {
+    fetchMock.mockRestore();
+  }
+});
+
+test.each(["lock", "expiry"] as const)("a resumed session clears its credentials on %s", async (action) => {
+  let stored: VaultSession | null = {
+    identity: "fake-identity",
+    recipient: "fake-recipient",
+    token: "fake-session",
+  };
+  class ResumedClient extends VaultClient {
+    constructor() {
+      super();
+      this.setSession(stored);
+    }
+
+    protected override setSession(session: VaultSession | null): void {
+      super.setSession(session);
+      stored = session;
+    }
+  }
+  const client = new ResumedClient();
+  const fetchMock = spyOn(globalThis, "fetch").mockResolvedValue(
+    new Response(null, {
+      status: action === "lock" ? 204 : 401,
+    }),
+  );
+  try {
+    expect(client.isUnlocked()).toBe(true);
+    if (action === "lock") await client.lock();
+    else await expect(client.listItems()).rejects.toBeInstanceOf(LockedError);
+    expect(new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get("Authorization")).toBe("Bearer fake-session");
+    expect(stored).toBeNull();
+    expect(client.isUnlocked()).toBe(false);
   } finally {
     fetchMock.mockRestore();
   }
@@ -107,9 +182,46 @@ test("a vault whose items are all readable reports none", async () => {
 
   expect(await decryptEntries([stored], identity)).toEqual({
     entries: [{ id: "0a", etag: "etag-0a", item, oldFormat: false }],
+    projects: [],
     unreadable: [],
   });
-  expect(await decryptEntries([], identity)).toEqual({ entries: [], unreadable: [] });
+  expect(await decryptEntries([], identity)).toEqual({ entries: [], projects: [], unreadable: [] });
+});
+
+test("an empty encrypted project can be listed and deleted with its ETag", async () => {
+  const identity = await generateX25519Identity();
+  const recipient = await identityToRecipient(identity);
+  const project: Project = {
+    v: 4,
+    kind: "project",
+    name: "fake-project",
+    name_key: "fake-project",
+    specialty: "Backend",
+    languages: ["Go"],
+    tags: ["fake-tag"],
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+  const ciphertext = toBase64(await encryptBytes(new TextEncoder().encode(JSON.stringify(project)), recipient));
+  const listing = await decryptEntries([{ id: "0a", etag: "0a-etag", ciphertext }], identity);
+  expect(listing).toEqual({
+    entries: [],
+    projects: [{ id: "0a", etag: "0a-etag", project }],
+    unreadable: [],
+  });
+
+  const fetchMock = spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 204 }));
+  try {
+    await new VaultClient().deleteProject(listing.projects[0]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/items/0a", {
+      method: "DELETE",
+      body: undefined,
+      headers: { "If-Match": "0a-etag" },
+    });
+  } finally {
+    fetchMock.mockRestore();
+  }
 });
 
 test("malformed URLs and notes are unreadable while valid items are listed", async () => {
@@ -161,7 +273,7 @@ test("a newer format and a file that is not an item are unreadable, not shown", 
     identity,
   );
 
-  expect(listing).toEqual({ entries: [], unreadable: ["0a", "0b", "0c", "0d", "0e"] });
+  expect(listing).toEqual({ entries: [], projects: [], unreadable: ["0a", "0b", "0c", "0d", "0e"] });
 });
 
 test("save finds the fresh name holder and uses the page entry for an overwrite", () => {

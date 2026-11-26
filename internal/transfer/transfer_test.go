@@ -12,6 +12,32 @@ import (
 
 var now = time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 
+func TestKeyfoldClassificationRoundTrip(t *testing.T) {
+	items := []vault.Item{
+		{V: 2, Name: "fake-legacy", Kind: "login", Folder: "fake-folder"},
+		{V: 3, Name: "fake-classified", Kind: "token", Folder: "fake-folder", Project: "fake-project",
+			Specialty: "Backend", Languages: []string{"Go", "SQL"}, Tags: []string{"fake-tag", "fake-other"}},
+	}
+	data, err := Export("keyfold", items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := Import("keyfold", data, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, items) {
+		t.Fatalf("got %+v, want %+v", got, items)
+	}
+}
+
+func TestKeyfoldImportRejectsInvalidProjectNameKey(t *testing.T) {
+	data := []byte(`[{"v":4,"kind":"project","name":"fake-Café","name_key":"fake-other","created_at":"2026-01-02T03:04:05Z","updated_at":"2026-01-02T03:04:05Z"}]`)
+	if items, _, err := Import("keyfold", data, now); err == nil || len(items) != 0 {
+		t.Fatalf("an inconsistent project name key was accepted: %v", err)
+	}
+}
+
 func TestBitwardenRoundTrip(t *testing.T) {
 	stamp := "2026-01-01T00:00:00Z"
 	items := []vault.Item{
@@ -20,8 +46,8 @@ func TestBitwardenRoundTrip(t *testing.T) {
 			Fields:   []vault.Field{{Name: "pin", Value: "fake-pin", Hidden: true}},
 			History:  []vault.Revision{{Value: "fake-old", ChangedAt: stamp}},
 			Favorite: true, Folder: "fake-folder", CreatedAt: stamp, UpdatedAt: stamp},
-		{V: 2, Name: "fake-token", Kind: "token", Value: "fake-tok", CreatedAt: stamp, UpdatedAt: stamp},
-		{V: 2, Name: "fake-note", Kind: "note", Value: "fake-text", CreatedAt: stamp, UpdatedAt: stamp},
+		{V: 2, Name: "fake-token", Kind: "token", Value: "fake-tok", Environment: "prod", CreatedAt: stamp, UpdatedAt: stamp},
+		{V: 2, Name: "fake-note", Kind: "note", Value: "fake-text", Environment: "preprod", CreatedAt: stamp, UpdatedAt: stamp},
 		{V: 2, Name: "fake-key", Kind: "ssh-key", CreatedAt: stamp, UpdatedAt: stamp,
 			SSHKey: &vault.SSHKey{Private: "fake-priv", Public: "fake-pub", Fingerprint: "fake-fp"}},
 	}
@@ -35,6 +61,23 @@ func TestBitwardenRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, items) {
 		t.Fatalf("round trip:\n got %+v\nwant %+v", got, items)
+	}
+}
+
+// A keyfold:environment field that is not a valid environment (an unknown or
+// an empty value) is someone's custom field: it is kept, and does not clear a
+// valid environment read before it.
+func TestBitwardenKeepsInvalidEnvironmentField(t *testing.T) {
+	for _, value := range []string{"staging", ""} {
+		data := []byte(`{"items":[{"type":1,"name":"fake-site","fields":[{"name":"keyfold:environment","value":"prod"},{"name":"keyfold:environment","value":"` + value + `","type":1}]}]}`)
+		got, skipped, err := Import("bitwarden-json", data, now)
+		if err != nil || len(got) != 1 || len(skipped) != 0 {
+			t.Fatalf("%q: got %+v, skipped %v, err %v", value, got, skipped, err)
+		}
+		want := []vault.Field{{Name: "keyfold:environment", Value: value, Hidden: true}}
+		if got[0].Environment != "prod" || !reflect.DeepEqual(got[0].Fields, want) {
+			t.Fatalf("%q: got environment %q and fields %+v, want prod and fields %+v", value, got[0].Environment, got[0].Fields, want)
+		}
 	}
 }
 

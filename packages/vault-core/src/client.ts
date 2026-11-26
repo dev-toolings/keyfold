@@ -1,5 +1,4 @@
-// Talks to the vault server. The decrypted identity and the session token live
-// in this object's memory only: never in localStorage, sessionStorage or cookies.
+// Talks to the vault server. By default the decrypted identity and token live only in memory.
 import { generateX25519Identity, identityToRecipient } from "age-encryption";
 import {
   decrypt,
@@ -11,7 +10,17 @@ import {
   unwrapIdentity,
   wrapIdentity,
 } from "./crypto";
-import { type BlobRef, type Entry, type Item, isItem, type Listing, upgrade } from "./item";
+import {
+  type BlobRef,
+  type Entry,
+  type Item,
+  isItem,
+  isProject,
+  type Listing,
+  type Project,
+  type ProjectEntry,
+  upgrade,
+} from "./item";
 
 /** Thrown when the session is gone (lock, idle expiry, server restart). */
 export class LockedError extends Error {}
@@ -83,10 +92,16 @@ export type StoredItem = { id: string; etag: string; ciphertext: string };
 export async function decryptEntries(raw: StoredItem[], identity: string): Promise<Listing> {
   const unreadable: string[] = [];
   const entries: Entry[] = [];
+  const projects: ProjectEntry[] = [];
   await Promise.all(
     raw.map(async (r) => {
       try {
-        const { item, old } = upgrade((await decryptItem(fromBase64(r.ciphertext), identity)) as Item);
+        const record = await decryptItem(fromBase64(r.ciphertext), identity);
+        if (isProject(record)) {
+          projects.push({ id: r.id, etag: r.etag, project: record });
+          return;
+        }
+        const { item, old } = upgrade(record as Item);
         if (!isItem(item)) throw new Error("not an item");
         entries.push({ id: r.id, etag: r.etag, item, oldFormat: old });
       } catch {
@@ -95,8 +110,11 @@ export async function decryptEntries(raw: StoredItem[], identity: string): Promi
     }),
   );
   entries.sort((a, b) => a.item.name.localeCompare(b.item.name));
-  return { entries, unreadable: unreadable.sort() };
+  projects.sort((a, b) => a.project.name.localeCompare(b.project.name) || a.id.localeCompare(b.id));
+  return { entries, projects, unreadable: unreadable.sort() };
 }
+
+export type VaultSession = { identity: string; recipient: string; token: string };
 
 export class VaultClient {
   private identity: string | null = null;
@@ -113,10 +131,11 @@ export class VaultClient {
   /** Sends a request with the session token and turns error statuses into errors. */
   private async send(method: string, path: string, body?: BodyInit, extra?: Record<string, string>): Promise<Response> {
     const headers: Record<string, string> = { ...extra };
-    if (this.token) headers.Authorization = `Bearer ${this.token}`;
+    const token = this.token;
+    if (token) headers.Authorization = `Bearer ${token}`;
     const res = await fetch(this.baseURL + path, { method, headers, body });
-    if (res.status === 401 && this.token) {
-      this.forget();
+    if (res.status === 401 && token) {
+      if (this.token === token) this.setSession(null);
       throw new LockedError("session expirée");
     }
     if (res.status === 404 && path === "/api/v1/status") {
@@ -156,10 +175,10 @@ export class VaultClient {
     return (res.status === 204 || res.status === 201 ? undefined : await res.json()) as T;
   }
 
-  private forget() {
-    this.identity = null;
-    this.recipient = null;
-    this.token = null;
+  protected setSession(session: VaultSession | null): void {
+    this.identity = session?.identity ?? null;
+    this.recipient = session?.recipient ?? null;
+    this.token = session?.token ?? null;
   }
 
   isUnlocked(): boolean {
@@ -195,6 +214,14 @@ export class VaultClient {
     return this.downloaded !== null;
   }
 
+  protected async unwrapIdentityForUnlock(wrappedIdentity: string, password: string): Promise<string | null> {
+    try {
+      return await unwrapIdentity(fromBase64(wrappedIdentity), password);
+    } catch {
+      return null;
+    }
+  }
+
   /** Decrypts the identity with the master password and opens a session. code: the TOTP code, when it is on. */
   async unlock(password: string, code?: string): Promise<void> {
     this.downloaded ??= await this.api<Wrapped>(
@@ -204,10 +231,8 @@ export class VaultClient {
       code ? { "X-TOTP-Code": code } : undefined,
     );
     const r = this.downloaded;
-    let id: string;
-    try {
-      id = await unwrapIdentity(fromBase64(r.identity), password);
-    } catch {
+    const id = await this.unwrapIdentityForUnlock(r.identity, password);
+    if (id === null) {
       throw new Error("Mot de passe incorrect.");
     }
     if ((await identityToRecipient(id)) !== r.recipient) {
@@ -216,9 +241,7 @@ export class VaultClient {
     const ch = await this.api<{ id: string; ciphertext: string }>("POST", "/api/v1/challenge");
     const answer = await decrypt(fromBase64(ch.ciphertext), id);
     const s = await this.api<{ token: string }>("POST", "/api/v1/session", { id: ch.id, answer: toBase64(answer) });
-    this.identity = id;
-    this.recipient = r.recipient;
-    this.token = s.token;
+    this.setSession({ identity: id, recipient: r.recipient, token: s.token });
     this.downloaded = null;
   }
 
@@ -258,8 +281,9 @@ export class VaultClient {
   }
 
   async lock(): Promise<void> {
-    if (this.token) await this.api("POST", "/api/v1/lock").catch(() => {});
-    this.forget();
+    const revoke = this.token ? this.api("POST", "/api/v1/lock").catch(() => {}) : undefined;
+    this.setSession(null);
+    await revoke;
   }
 
   async listItems(): Promise<Listing> {
@@ -272,15 +296,30 @@ export class VaultClient {
    * changed since), or under a new random id when entry is null. Returns the id used.
    */
   async saveItem(entry: Entry | null, item: Item): Promise<string> {
-    const itemId = entry?.id ?? randomId();
     const ct = await encryptItem(item, this.recipient as string);
+    return this.storeRecord(entry?.id ?? randomId(), ct, entry?.etag);
+  }
+
+  /** Stores a project as its own encrypted record in the vault. */
+  async createProject(project: Project): Promise<string> {
+    if (!isProject(project)) throw new Error("Fiche projet invalide.");
+    const ct = await encryptBytes(new TextEncoder().encode(JSON.stringify(project)), this.recipient as string);
+    return this.storeRecord(randomId(), ct);
+  }
+
+  async deleteProject(entry: ProjectEntry): Promise<void> {
+    if (!entry.etag) throw new Error("Rechargez le coffre avant de supprimer ce projet.");
+    await this.api("DELETE", `/api/v1/items/${entry.id}`, undefined, { "If-Match": entry.etag });
+  }
+
+  private async storeRecord(id: string, ciphertext: Uint8Array, etag?: string): Promise<string> {
     await this.api(
       "PUT",
-      `/api/v1/items/${itemId}`,
-      { ciphertext: toBase64(ct) },
-      entry ? { "If-Match": entry.etag } : undefined,
+      `/api/v1/items/${id}`,
+      { ciphertext: toBase64(ciphertext) },
+      etag === undefined ? undefined : { "If-Match": etag },
     );
-    return itemId;
+    return id;
   }
 
   /**
