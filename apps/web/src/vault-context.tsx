@@ -74,6 +74,11 @@ type VaultContext = {
   /** Decrypts an attachment and hands it to the browser as a download. */
   download: (ref: vault.BlobRef) => Promise<void>;
   lock: () => Promise<void>;
+  /** Deposits of agents whose name holds another value: the owner chooses. */
+  depositConflicts: vault.DepositConflict[];
+  /** Names the deposits added to the vault when it was opened. */
+  depositsAdded: string[];
+  resolveDeposit: (conflict: vault.DepositConflict, choice: vault.DepositChoice) => Promise<boolean>;
 };
 
 const Context = createContext<VaultContext | null>(null);
@@ -93,6 +98,8 @@ export function VaultProvider({ children }: { children: ReactNode }) {
   const [now, setNow] = useState(() => new Date());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [depositConflicts, setDepositConflicts] = useState<vault.DepositConflict[]>([]);
+  const [depositsAdded, setDepositsAdded] = useState<string[]>([]);
 
   const run = useCallback(
     async <T,>(action: () => Promise<T>): Promise<T | null> => {
@@ -108,18 +115,50 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     [navigate, location],
   );
 
+  // Each listing also rewrites the catalogs of the deposit keys, so an agent
+  // lists the names as they are now. A failure there leaves the vault usable.
   const reload = useCallback(async () => {
     const listing = await vault.listItems();
     setEntries(listing.entries);
     setProjects(listing.projects);
     setUnreadable(listing.unreadable);
     setNow(new Date());
+    try {
+      await vault.refreshCatalogs(listing.entries);
+    } catch (e) {
+      if (e instanceof vault.LockedError) throw e;
+      setError(`Catalogue des clés de dépôt non mis à jour : ${errorMessage(e)}`);
+    }
     return listing;
   }, []);
 
+  // Deposits of agents enter the vault when it opens, then each deposit key gets
+  // the item names it may list. A vault with an unreadable item is left alone:
+  // a deposit could take that item's name. A failure here keeps the vault usable.
+  const settleDeposits = useCallback(
+    async (listing: vault.Listing) => {
+      if (listing.unreadable.length > 0) return;
+      try {
+        const report = await vault.processDeposits(listing.entries);
+        if (report.reload) await reload();
+        if (report.incomplete) {
+          setError(
+            "Des dépôts des agents attendent encore : un élément du coffre est illisible (voir l'état du système). Réglez-le, puis rouvrez le coffre pour les traiter.",
+          );
+        }
+        setDepositsAdded(report.added);
+        setDepositConflicts(report.conflicts);
+      } catch (e) {
+        if (e instanceof vault.LockedError) throw e;
+        setError(`Dépôts des agents non traités : ${errorMessage(e)}`);
+      }
+    },
+    [reload],
+  );
+
   // biome-ignore lint/correctness/useExhaustiveDependencies: load once on mount
   useEffect(() => {
-    run(reload).finally(() => setLoading(false));
+    run(async () => settleDeposits(await reload())).finally(() => setLoading(false));
   }, []);
 
   // The name and the attachments of an item that cannot be read are unknown:
@@ -301,6 +340,25 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     [run],
   );
 
+  const resolveDeposit = useCallback(
+    async (conflict: vault.DepositConflict, choice: vault.DepositChoice) =>
+      (await run(async () => {
+        const forget = () =>
+          setDepositConflicts((current) => current.filter((d) => d.keyId !== conflict.keyId || d.id !== conflict.id));
+        const fresh = await writable();
+        try {
+          await vault.resolveDeposit(conflict, choice, fresh.entries);
+        } catch (e) {
+          if (e instanceof vault.GoneDepositError) forget();
+          throw e;
+        }
+        forget();
+        await reload();
+        return true;
+      })) ?? false,
+    [run, reload, writable],
+  );
+
   const lock = useCallback(async () => {
     await vault.lock();
     navigate("/personal/unlock", { replace: true });
@@ -326,6 +384,9 @@ export function VaultProvider({ children }: { children: ReactNode }) {
       attach,
       download,
       lock,
+      depositConflicts,
+      depositsAdded,
+      resolveDeposit,
     }),
     [
       entries,
@@ -343,6 +404,9 @@ export function VaultProvider({ children }: { children: ReactNode }) {
       attach,
       download,
       lock,
+      depositConflicts,
+      depositsAdded,
+      resolveDeposit,
     ],
   );
   return <Context.Provider value={value}>{children}</Context.Provider>;

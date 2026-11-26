@@ -10,6 +10,7 @@ import {
   unwrapIdentity,
   wrapIdentity,
 } from "./crypto";
+import { withValue } from "./generate";
 import {
   type BlobRef,
   type Entry,
@@ -27,6 +28,9 @@ export class LockedError extends Error {}
 
 /** Thrown when an item changed since it was read (HTTP 412), or an unseen item holds the requested name. */
 export class ConflictError extends Error {}
+
+/** Thrown when a deposit shown on the page is gone: its key was revoked, or another client settled it. */
+export class GoneDepositError extends Error {}
 
 /** Thrown when vault creation requires a valid install token. */
 export class InstallTokenError extends Error {}
@@ -77,6 +81,26 @@ export type ServerHealth = {
   uptime_seconds: number;
 };
 export type TotpSetup = { secret: string; uri: string; qr: string };
+
+/** A deposit key as the server lists it: an agent that deposits items without unlocking the vault. */
+export type DepositKeyInfo = { id: string; name: string; recipient: string; created: string };
+/** A deposit whose name is taken by an item holding another value: the owner chooses. */
+export type DepositConflict = { keyId: string; id: string; keyName: string; created: string; item: Item };
+/**
+ * What processDeposits did: names added to the vault, deposits dropped, conflicts left for the owner.
+ * reload: the vault changed (here or by another client): list it again.
+ * incomplete: an unreadable item stopped the run; the other deposits wait for the next opening.
+ */
+export type DepositReport = {
+  added: string[];
+  dropped: number;
+  conflicts: DepositConflict[];
+  reload: boolean;
+  incomplete: boolean;
+};
+type RawDeposit = { keyId: string; keyName: string; id: string; ciphertext: string; created: string };
+/** How the owner settles a conflict: new value with the old one in the history, a second item, or nothing. */
+export type DepositChoice = "replace" | "keep-both" | "reject";
 
 /** Same rule as the CLI (vault.MinMasterPasswordLength in Go). */
 export const MIN_MASTER_PASSWORD_LENGTH = 16;
@@ -357,6 +381,155 @@ export class VaultClient {
     for (const a of entry.item.attachments ?? []) if (!keep.includes(a.id)) await this.deleteAttachment(a.id);
   }
 
+  depositKeys(): Promise<DepositKeyInfo[]> {
+    return this.api<DepositKeyInfo[]>("GET", "/api/v1/deposit-keys");
+  }
+
+  /**
+   * Makes a deposit key in this browser and registers it. Returns the value of
+   * KEYFOLD_DEPOSIT_KEY, shown once: the server keeps only the token's hash.
+   * It pins the vault's public key, so a server cannot swap in its own later.
+   */
+  async createDepositKey(name: string): Promise<string> {
+    const token = randomHex(32);
+    const identity = await generateX25519Identity();
+    await this.api("POST", "/api/v1/deposit-keys", {
+      name,
+      token,
+      recipient: await identityToRecipient(identity),
+    });
+    return ["kfdep1", token, identity, this.recipient as string].join(".");
+  }
+
+  async revokeDepositKey(id: string): Promise<void> {
+    await this.api("DELETE", `/api/v1/deposit-keys/${id}`);
+  }
+
+  private async deleteDeposit(d: { keyId: string; id: string }): Promise<void> {
+    await this.api("DELETE", `/api/v1/deposits/${d.keyId}/${d.id}`);
+  }
+
+  /** Decrypts a deposit; null when it is not an item this client reads (a key holder can send anything). */
+  private async depositItem(d: RawDeposit): Promise<Item | null> {
+    try {
+      const { item } = upgrade((await decryptItem(fromBase64(d.ciphertext), this.identity as string)) as Item);
+      return isItem(item) ? item : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Stores the item a deposit becomes under an id derived from the deposit, and
+   * only if that id is free: two clients moving it at once, or a retry after a
+   * failure, find the item already stored and leave it as it is, edits
+   * included. The deposit key holder cannot choose that id. Returns false
+   * when the item was already there: its current content is then unknown here.
+   */
+  private async saveDepositItem(d: { keyId: string; id: string }, item: Item): Promise<boolean> {
+    const ct = await encryptItem(item, this.recipient as string);
+    try {
+      await this.api(
+        "PUT",
+        `/api/v1/items/${await depositItemId(d)}`,
+        { ciphertext: toBase64(ct) },
+        { "If-None-Match": "*" },
+      );
+      return true;
+    } catch (e) {
+      if (!(e instanceof ConflictError)) throw e;
+      return false;
+    }
+  }
+
+  /**
+   * Moves the waiting deposits into the vault: a new name is added, a value
+   * equal to the stored one is dropped, a deposit that cannot be read is
+   * dropped, and a name holding another value is left for the owner. Each
+   * deposit is deleted after the item is stored: a run cut short is finished
+   * by the next one, which then finds the value already stored.
+   */
+  async processDeposits(entries: Entry[]): Promise<DepositReport> {
+    const raw = await this.api<RawDeposit[]>("GET", "/api/v1/deposits");
+    const report: DepositReport = { added: [], dropped: 0, conflicts: [], reload: false, incomplete: false };
+    let names = new Map(entries.map((e) => [e.item.name, e.item.value]));
+    for (const d of raw) {
+      const item = await this.depositItem(d);
+      if (!item) {
+        await this.deleteDeposit(d);
+        report.dropped++;
+      } else if (!names.has(item.name)) {
+        report.reload = true;
+        if (await this.saveDepositItem(d, item)) {
+          names.set(item.name, item.value);
+          report.added.push(item.name);
+        } else {
+          // Stored already, by another client or an earlier run, and maybe
+          // renamed or edited since: the deposits that follow are compared with
+          // the vault as it is now. One unreadable item stops the run: a deposit
+          // could take its unknown name.
+          const fresh = await this.listItems();
+          if (fresh.unreadable.length > 0) return { ...report, incomplete: true };
+          names = new Map(fresh.entries.map((e) => [e.item.name, e.item.value]));
+        }
+        await this.deleteDeposit(d);
+      } else if (names.get(item.name) === item.value) {
+        await this.deleteDeposit(d);
+        report.dropped++;
+      } else {
+        report.conflicts.push({ keyId: d.keyId, id: d.id, keyName: d.keyName, created: d.created, item });
+      }
+    }
+    return report;
+  }
+
+  /**
+   * Settles a conflict against the current entries, then deletes the deposit.
+   * The deposit is read again first: one revoked or settled elsewhere since the
+   * page listed it is refused, and its stored content is what gets applied.
+   */
+  async resolveDeposit(c: DepositConflict, choice: DepositChoice, entries: Entry[]): Promise<void> {
+    const raw = await this.api<RawDeposit[]>("GET", "/api/v1/deposits");
+    const d = raw.find((r) => r.keyId === c.keyId && r.id === c.id);
+    if (!d) throw new GoneDepositError("Ce dépôt n'existe plus : sa clé a été révoquée ou il a déjà été traité.");
+    const item = choice === "reject" ? null : await this.depositItem(d);
+    const stamp = new Date().toISOString();
+    if (choice === "replace" && item) {
+      const target = entries.find((e) => e.item.name === item.name) ?? null;
+      const next = target ? withValue({ ...target.item, updated_at: stamp }, item.value, stamp) : item;
+      await this.saveItem(target, next);
+    } else if (choice === "keep-both" && item) {
+      // A retry finds the copy it stored before under the same id, and keeps its name.
+      const id = await depositItemId(d);
+      const taken = new Set(entries.map((e) => e.item.name));
+      let n = 2;
+      while (taken.has(`${item.name} (${n})`)) n++;
+      const name = entries.find((e) => e.id === id)?.item.name ?? `${item.name} (${n})`;
+      await this.saveDepositItem(d, { ...item, name, created_at: stamp, updated_at: stamp });
+    }
+    await this.deleteDeposit(d);
+  }
+
+  /**
+   * Encrypts, for each deposit key, the catalog its agent lists: name, kind,
+   * project and environment of each item. Never a value, a note or a date.
+   */
+  async refreshCatalogs(entries: Entry[]): Promise<void> {
+    const keys = await this.depositKeys();
+    if (keys.length === 0) return;
+    const items = entries.map(({ item }) => ({
+      name: item.name,
+      kind: item.kind,
+      project: item.project,
+      environment: item.environment,
+    }));
+    const plain = new TextEncoder().encode(JSON.stringify({ items }));
+    for (const k of keys) {
+      const ct = await encryptBytes(plain, k.recipient);
+      await this.api("PUT", `/api/v1/deposit-keys/${k.id}/catalog`, { ciphertext: toBase64(ct) });
+    }
+  }
+
   /** Encrypts a file to the vault and uploads it. The item that lists the returned ref is saved separately. */
   async uploadAttachment(name: string, data: Uint8Array): Promise<BlobRef> {
     const id = randomId();
@@ -381,6 +554,15 @@ export class VaultClient {
       if (e instanceof LockedError) throw e;
     });
   }
+}
+
+/** The item id a deposit becomes: derived from its key and id, so every client and retry uses the same. */
+async function depositItemId(d: { keyId: string; id: string }): Promise<string> {
+  return (await sha256Hex(new TextEncoder().encode(`keyfold deposit item\0${d.keyId}\0${d.id}`))).slice(0, 32);
+}
+
+function randomHex(bytes: number): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(bytes)), (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 function randomId(): string {

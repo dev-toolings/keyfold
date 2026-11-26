@@ -4,6 +4,7 @@ import { generateX25519Identity, identityToRecipient } from "age-encryption";
 import {
   ConflictError,
   decryptEntries,
+  GoneDepositError,
   InstallTokenError,
   isLoopbackHost,
   LockedError,
@@ -293,4 +294,231 @@ test("save finds the fresh name holder and uses the page entry for an overwrite"
   expect(() => selectSaveTarget([edited], [duplicate, renamed], edited.id, "fake-current")).toThrow(ConflictError);
   expect(() => selectSaveTarget([edited], [renamed, duplicate], edited.id, "fake-current")).toThrow(ConflictError);
   expect(selectSaveTarget(page, [renamed, duplicate], edited.id, "fake-current")).toBe(edited);
+});
+
+test("deposits: a new name enters the vault, an equal value or an unreadable deposit is dropped, another value waits", async () => {
+  const identity = await generateX25519Identity();
+  const recipient = await identityToRecipient(identity);
+  const item = (name: string, value: string): Item => ({
+    v: 2,
+    name,
+    kind: "token",
+    value,
+    note: "",
+    updated_at: "2026-11-26T00:00:00Z",
+  });
+  const sealed = async (i: Item) => toBase64(await encryptItem(i, recipient));
+  const deposit = (id: string, ciphertext: string) => ({
+    keyId: "a".repeat(32),
+    keyName: "fake-agent",
+    id: id.repeat(32),
+    ciphertext,
+    created: "2026-11-26T00:00:00Z",
+  });
+  const deposits = [
+    deposit("1", await sealed(item("fake-new", "fake-value-1"))),
+    deposit("2", await sealed(item("fake-same", "fake-value-2"))),
+    deposit("3", await sealed(item("fake-taken", "fake-attacker-value"))),
+    deposit("4", toBase64(new TextEncoder().encode("not an age file"))),
+  ];
+  const entries: Entry[] = [
+    { id: "e1", etag: "e1-etag", item: item("fake-same", "fake-value-2"), oldFormat: false },
+    { id: "e2", etag: "e2-etag", item: item("fake-taken", "fake-real-value"), oldFormat: false },
+  ];
+  const calls: string[] = [];
+  const fetchMock = spyOn(globalThis, "fetch").mockImplementation((async (url: string, init?: RequestInit) => {
+    calls.push(`${init?.method} ${url}`);
+    if (url === "/api/v1/deposits") return Response.json(deposits);
+    return new Response(null, { status: 204 });
+  }) as typeof fetch);
+  class Opened extends VaultClient {
+    constructor() {
+      super();
+      this.setSession({ identity, recipient, token: "fake-token" });
+    }
+  }
+  try {
+    const report = await new Opened().processDeposits(entries);
+    expect(report.added).toEqual(["fake-new"]);
+    expect(report.dropped).toBe(2);
+    expect(report.conflicts.map((c) => [c.item.name, c.item.value, c.keyName])).toEqual([
+      ["fake-taken", "fake-attacker-value", "fake-agent"],
+    ]);
+    const puts = () => calls.filter((c) => c.startsWith("PUT /api/v1/items/"));
+    expect(puts()).toHaveLength(1);
+    expect(calls.filter((c) => c.startsWith("DELETE /api/v1/deposits/"))).toEqual([
+      `DELETE /api/v1/deposits/${"a".repeat(32)}/${"1".repeat(32)}`,
+      `DELETE /api/v1/deposits/${"a".repeat(32)}/${"2".repeat(32)}`,
+      `DELETE /api/v1/deposits/${"a".repeat(32)}/${"4".repeat(32)}`,
+    ]);
+    // A second client moving the same deposit writes the same item, not a copy.
+    await new Opened().processDeposits(entries);
+    expect(puts()).toHaveLength(2);
+    expect(puts()[1]).toBe(puts()[0]);
+  } finally {
+    fetchMock.mockRestore();
+  }
+});
+
+test("a deposit revoked or settled elsewhere since the page listed it is refused", async () => {
+  const identity = await generateX25519Identity();
+  const recipient = await identityToRecipient(identity);
+  const fetchMock = spyOn(globalThis, "fetch").mockImplementation((async (url: string) =>
+    url === "/api/v1/deposits" ? Response.json([]) : new Response(null, { status: 204 })) as typeof fetch);
+  class Opened extends VaultClient {
+    constructor() {
+      super();
+      this.setSession({ identity, recipient, token: "fake-token" });
+    }
+  }
+  const conflict = {
+    keyId: "a".repeat(32),
+    id: "1".repeat(32),
+    keyName: "fake-agent",
+    created: "2026-11-26T00:00:00Z",
+    item: { v: 2, name: "fake-taken", kind: "token", value: "fake-attacker-value", note: "", updated_at: "" } as Item,
+  };
+  try {
+    await expect(new Opened().resolveDeposit(conflict, "replace", [])).rejects.toBeInstanceOf(GoneDepositError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  } finally {
+    fetchMock.mockRestore();
+  }
+});
+
+test("a deposit already stored by an earlier run is not stored again, nor taken for the next deposits", async () => {
+  const identity = await generateX25519Identity();
+  const recipient = await identityToRecipient(identity);
+  const item = (value: string): Item => ({ v: 2, name: "fake-moved", kind: "token", value, note: "", updated_at: "" });
+  const deposit = async (id: string, i: Item) => ({
+    keyId: "a".repeat(32),
+    keyName: "fake-agent",
+    id: id.repeat(32),
+    ciphertext: toBase64(await encryptItem(i, recipient)),
+    created: "2026-11-26T00:00:00Z",
+  });
+  const deposits = [await deposit("1", item("fake-value")), await deposit("2", item("fake-value"))];
+  const puts: string[] = [];
+  const fetchMock = spyOn(globalThis, "fetch").mockImplementation((async (url: string, init?: RequestInit) => {
+    if (url === "/api/v1/deposits") return Response.json(deposits);
+    // The vault as it is now: the first deposit's item, renamed by the owner.
+    if (url === "/api/v1/items") {
+      const renamed = { ...item("fake-value"), name: "fake-renamed" };
+      return Response.json([
+        { id: "b".repeat(32), etag: "b", ciphertext: toBase64(await encryptItem(renamed, recipient)) },
+      ]);
+    }
+    if (init?.method === "PUT") {
+      puts.push(url);
+      // The first deposit's item is there already: an earlier run stored it, and the owner renamed it since.
+      if (puts.length === 1) return Response.json({ error: "item changed since it was read" }, { status: 412 });
+    }
+    return new Response(null, { status: 204 });
+  }) as typeof fetch);
+  class Opened extends VaultClient {
+    constructor() {
+      super();
+      this.setSession({ identity, recipient, token: "fake-token" });
+    }
+  }
+  try {
+    const report = await new Opened().processDeposits([]);
+    // The second deposit is stored under its own id: the first one's name is not trusted.
+    expect(puts).toHaveLength(2);
+    expect(puts[1]).not.toBe(puts[0]);
+    expect(report.added).toEqual(["fake-moved"]);
+    expect(report.reload).toBe(true);
+  } finally {
+    fetchMock.mockRestore();
+  }
+});
+
+test("after a deposit stored by another client, the next deposit of the same name is compared with it", async () => {
+  const identity = await generateX25519Identity();
+  const recipient = await identityToRecipient(identity);
+  const item = (value: string): Item => ({ v: 2, name: "fake-raced", kind: "token", value, note: "", updated_at: "" });
+  const deposit = async (id: string, i: Item) => ({
+    keyId: "a".repeat(32),
+    keyName: "fake-agent",
+    id: id.repeat(32),
+    ciphertext: toBase64(await encryptItem(i, recipient)),
+    created: "2026-11-26T00:00:00Z",
+  });
+  const deposits = [await deposit("1", item("fake-first")), await deposit("2", item("fake-attacker-value"))];
+  const puts: string[] = [];
+  const fetchMock = spyOn(globalThis, "fetch").mockImplementation((async (url: string, init?: RequestInit) => {
+    if (url === "/api/v1/deposits") return Response.json(deposits);
+    // Another client stored the first deposit after this one listed the vault.
+    if (url === "/api/v1/items") {
+      return Response.json([
+        { id: "c".repeat(32), etag: "c", ciphertext: toBase64(await encryptItem(item("fake-first"), recipient)) },
+      ]);
+    }
+    if (init?.method === "PUT") {
+      puts.push(url);
+      return Response.json({ error: "item changed since it was read" }, { status: 412 });
+    }
+    return new Response(null, { status: 204 });
+  }) as typeof fetch);
+  class Opened extends VaultClient {
+    constructor() {
+      super();
+      this.setSession({ identity, recipient, token: "fake-token" });
+    }
+  }
+  try {
+    const report = await new Opened().processDeposits([]);
+    expect(puts).toHaveLength(1);
+    expect(report.conflicts.map((c) => c.item.value)).toEqual(["fake-attacker-value"]);
+  } finally {
+    fetchMock.mockRestore();
+  }
+});
+
+test("an unreadable item met after a deposit stored elsewhere stops the run and says so", async () => {
+  const identity = await generateX25519Identity();
+  const recipient = await identityToRecipient(identity);
+  const item = (value: string): Item => ({
+    v: 2,
+    name: "fake-stopped",
+    kind: "token",
+    value,
+    note: "",
+    updated_at: "",
+  });
+  const deposit = async (id: string) => ({
+    keyId: "a".repeat(32),
+    keyName: "fake-agent",
+    id: id.repeat(32),
+    ciphertext: toBase64(await encryptItem(item(`fake-${id}`), recipient)),
+    created: "2026-11-26T00:00:00Z",
+  });
+  const deposits = [await deposit("1"), await deposit("2")];
+  const puts: string[] = [];
+  const fetchMock = spyOn(globalThis, "fetch").mockImplementation((async (url: string, init?: RequestInit) => {
+    if (url === "/api/v1/deposits") return Response.json(deposits);
+    if (url === "/api/v1/items") {
+      return Response.json([
+        { id: "d".repeat(32), etag: "d", ciphertext: toBase64(new TextEncoder().encode("damaged")) },
+      ]);
+    }
+    if (init?.method === "PUT") {
+      puts.push(url);
+      return Response.json({ error: "item changed since it was read" }, { status: 412 });
+    }
+    return new Response(null, { status: 204 });
+  }) as typeof fetch);
+  class Opened extends VaultClient {
+    constructor() {
+      super();
+      this.setSession({ identity, recipient, token: "fake-token" });
+    }
+  }
+  try {
+    const report = await new Opened().processDeposits([]);
+    expect(report.incomplete).toBe(true);
+    expect(puts).toHaveLength(1);
+  } finally {
+    fetchMock.mockRestore();
+  }
 });

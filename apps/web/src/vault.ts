@@ -2,6 +2,8 @@
 // call these functions; the crypto and the API live in @keyfold/vault-core.
 import {
   type BlobRef,
+  type DepositChoice,
+  type DepositConflict,
   type Entry,
   type Item,
   type Project,
@@ -76,6 +78,13 @@ export const hasDownloadedIdentity = () => client.hasDownloadedIdentity();
 export const unlock = (password: string, code?: string) => client.unlock(password, code);
 export const changePassword = (current: string, next: string, code?: string) =>
   client.changePassword(current, next, code);
+export const depositKeys = () => client.depositKeys();
+export const createDepositKey = (name: string) => client.createDepositKey(name);
+export const revokeDepositKey = (id: string) => client.revokeDepositKey(id);
+export const processDeposits = (entries: Entry[]) => client.processDeposits(entries);
+export const resolveDeposit = (c: DepositConflict, choice: DepositChoice, entries: Entry[]) =>
+  client.resolveDeposit(c, choice, entries);
+export const refreshCatalogs = (entries: Entry[]) => client.refreshCatalogs(entries);
 export const totpSetup = () => client.totpSetup();
 export const totpEnable = (code: string) => client.totpEnable(code);
 export const totpDisable = (code: string) => client.totpDisable(code);
