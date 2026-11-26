@@ -1,4 +1,4 @@
-import { Bot, CircleCheck, LoaderCircle, RefreshCw, TriangleExclamationPoint } from "lucide-react";
+import { CircleCheck, LoaderCircle, RefreshCw, TriangleExclamationPoint } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { Link } from "react-router";
 import { Badge } from "@/components/reui/badge";
@@ -18,9 +18,8 @@ const RULES: Record<Filter, string> = {
   no2fa: "Sites sans secret de double authentification",
 };
 
-/** Health check: what the server stores, then the vault indicators, then the same check for AI agents. */
 export function HealthPage() {
-  const { entries, flags } = useVault();
+  const { entries, projects, unreadable, flags } = useVault();
   const [server, setServer] = useState<ServerHealth | null>(null);
   const [checkedAt, setCheckedAt] = useState(() => new Date());
   const [error, setError] = useState("");
@@ -45,6 +44,7 @@ export function HealthPage() {
 
   // Attachment files the server holds that no item lists any more.
   const referenced = entries.reduce((n, e) => n + (e.item.attachments?.length ?? 0), 0);
+  const decryptedCount = entries.length + projects.length;
 
   return (
     <>
@@ -74,6 +74,23 @@ export function HealthPage() {
         </Card>
       )}
 
+      {unreadable.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <TriangleExclamationPoint className="size-4" aria-hidden="true" />
+              {plural(unreadable.length, "élément illisible", "éléments illisibles")}
+            </CardTitle>
+            <CardDescription>
+              <code className="font-mono break-all">{unreadable.map((id) => `items/${id}.age`).join(", ")}</code>.
+              Fichier abîmé, ou format plus récent que cette application. Mettez d'abord Keyfold à jour : un format plus
+              récent redevient lisible. Sinon, restaurez une sauvegarde. Supprimer le fichier sur le serveur efface
+              l'élément pour de bon. En attendant, le coffre est en lecture seule.
+            </CardDescription>
+          </CardHeader>
+        </Card>
+      )}
+
       <section className="flex flex-col gap-3">
         <h3 className="text-sm font-medium">Serveur</h3>
         {!server && !error ? (
@@ -92,23 +109,27 @@ export function HealthPage() {
                 helper={`En ligne, démarré ${formatRelative(new Date(Date.now() - server.uptime_seconds * 1000).toISOString(), new Date())}`}
               />
               <Kpi
-                label="Éléments chiffrés"
+                label="Fichiers chiffrés du coffre"
                 value={formatNumber(server.items)}
-                ok={server.items === entries.length}
+                ok={server.items === decryptedCount}
                 helper={
-                  server.items === entries.length
-                    ? "Tous déchiffrés dans ce navigateur"
-                    : `${formatNumber(entries.length)} chargés ici : un autre client a écrit depuis, rechargez la page`
+                  unreadable.length > 0
+                    ? `${formatNumber(decryptedCount)} déchiffrés ici, ${plural(unreadable.length, "illisible", "illisibles")} : le détail est en haut de cette page`
+                    : server.items === decryptedCount
+                      ? `${plural(entries.length, "élément", "éléments")} et ${plural(projects.length, "fiche projet", "fiches projet")} déchiffrés dans ce navigateur`
+                      : `${formatNumber(decryptedCount)} chargés ici : un autre client a écrit depuis, rechargez la page`
                 }
               />
               <Kpi
                 label="Pièces jointes"
                 value={formatNumber(server.blobs)}
-                ok={server.blobs === referenced}
+                ok={unreadable.length === 0 && server.blobs === referenced}
                 helper={
-                  server.blobs === referenced
-                    ? `${formatSize(server.blob_bytes)} au total, ${formatSize(server.max_blob)} au plus par fichier`
-                    : `${formatSize(server.blob_bytes)} au total, dont ${plural(Math.abs(server.blobs - referenced), "fichier", "fichiers")} sans élément correspondant`
+                  unreadable.length > 0
+                    ? `${formatSize(server.blob_bytes)} au total. Les fichiers sans élément ne peuvent pas être comptés tant qu'un élément est illisible`
+                    : server.blobs === referenced
+                      ? `${formatSize(server.blob_bytes)} au total, ${formatSize(server.max_blob)} au plus par fichier`
+                      : `${formatSize(server.blob_bytes)} au total, dont ${plural(Math.abs(server.blobs - referenced), "fichier", "fichiers")} sans élément correspondant`
                 }
               />
               <Kpi
@@ -151,6 +172,13 @@ export function HealthPage() {
 
       <section className="flex flex-col gap-3">
         <h3 className="text-sm font-medium">Indicateurs du coffre</h3>
+        {unreadable.length > 0 && (
+          <p className="text-sm text-muted-foreground">
+            Calculés sur les éléments lisibles seulement :{" "}
+            {plural(unreadable.length, "élément illisible n'est pas compté", "éléments illisibles ne sont pas comptés")}
+            .
+          </p>
+        )}
         <div className="grid gap-3 md:grid-cols-3 lg:grid-cols-5">
           {FILTERS.map((f) => (
             <Link key={f} to={`/personal/vault?filter=${f}`} className="rounded-xl outline-none focus-visible:ring-2">
@@ -164,25 +192,6 @@ export function HealthPage() {
           ))}
         </div>
       </section>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Bot className="size-4 text-muted-foreground" />
-            Le même contrôle pour un agent IA
-          </CardTitle>
-          <CardDescription>
-            L'outil MCP <code>vault_health</code> de <code>kf mcp</code> renvoie l'état du serveur et ces indicateurs,
-            par nom d'élément, avec les mêmes règles que cette page. Jamais une valeur ni une note. Déverrouillez
-            d'abord avec <code>kf unlock</code>.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <pre className="overflow-x-auto rounded-lg bg-muted p-3 font-mono text-xs">
-            claude mcp add keyfold -- "$PWD/bin/kf" mcp
-          </pre>
-        </CardContent>
-      </Card>
     </>
   );
 }

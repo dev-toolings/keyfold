@@ -4,6 +4,16 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* After a click, a focus the app moves back (a dialog closing onto its trigger)
+   shows no ring; Tab or another key brings it back. Text fields keep it.
+   main.tsx sets data-modality. */
+@custom-variant focus-visible {
+  &:focus-visible:is(textarea, select, [contenteditable], input:not([type="checkbox"], [type="radio"])),
+  html:not([data-modality="pointer"]) &:focus-visible {
+    @slot;
+  }
+}
+
 @theme inline {
   --font-heading: var(--font-sans);
   --color-sidebar-ring: var(--sidebar-ring);
@@ -144,7 +154,11 @@
 
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    @apply border-border outline-ring/50 scrollbar-thin scrollbar-thumb-muted-foreground scrollbar-track-transparent;
+  }
+  html[data-modality="pointer"]
+    :focus-visible:not(textarea, select, [contenteditable], input:not([type="checkbox"], [type="radio"])) {
+    outline: none;
   }
   body {
     @apply bg-background text-foreground;
@@ -154,9 +168,8 @@
   }
 }
 
-/* The product's primary button: a dark pill with a cast shadow and a slow light
-   ring. It is the default variant of Button, so the vault and the landing page
-   share this one definition. Unlayered on purpose: it must win over the radius
+/* The default Button variant is a dark pill with a cast shadow and a slow light
+   ring. Unlayered on purpose: it must win over the radius
    and colour utilities of the other variants' base classes. */
 .btn-brand {
   position: relative;
@@ -211,6 +224,49 @@
 
 @media (prefers-reduced-motion: reduce) {
   .btn-brand::before {
+    animation: none;
+  }
+}
+
+/* Sidebar project tree (BoardUI tree view): branches open and close with height, fade, a 4px slide and a blur. */
+.tree-branch {
+  overflow: hidden;
+}
+
+.tree-branch[data-state="open"] {
+  animation: tree-branch-open 280ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.tree-branch[data-state="closed"] {
+  animation: tree-branch-close 280ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes tree-branch-open {
+  from {
+    height: 0;
+    opacity: 0;
+    transform: translateY(-4px);
+    filter: blur(4px);
+  }
+  to {
+    height: var(--radix-collapsible-content-height);
+  }
+}
+
+@keyframes tree-branch-close {
+  from {
+    height: var(--radix-collapsible-content-height);
+  }
+  to {
+    height: 0;
+    opacity: 0;
+    transform: translateY(-4px);
+    filter: blur(4px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tree-branch[data-state] {
     animation: none;
   }
 }

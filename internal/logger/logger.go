@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"keyfold/internal/hosts"
 )
 
 // RedactedKeys are attribute names whose value is never printed, in either face.
@@ -162,7 +164,7 @@ func (w *statusWriter) WriteHeader(code int) {
 }
 
 // Access sets X-Request-Id and logs one line per request after the handler
-// ran. It logs the path only: never the query, headers or body.
+// ran. It includes the client IP and omits the query, raw headers and body.
 func Access(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -176,11 +178,13 @@ func Access(next http.Handler) http.Handler {
 		level := slog.LevelInfo
 		if sw.status >= 500 {
 			level = slog.LevelError
+		} else if r.Pattern == "GET /api/v1/alive" {
+			level = slog.LevelDebug
 		} else if sw.status >= 400 {
 			level = slog.LevelWarn
 		}
 		attrs := []any{"method", r.Method, "path", r.URL.Path, "status", sw.status,
-			"durationMs", time.Since(start).Milliseconds(), "requestId", requestID}
+			"durationMs", time.Since(start).Milliseconds(), "client", hosts.Client(r), "requestId", requestID}
 		if r.Pattern != "" {
 			attrs = append(attrs, "route", r.Pattern)
 		}

@@ -2,20 +2,22 @@ package main
 
 import (
 	"bytes"
-	"fmt"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"filippo.io/age"
-	"golang.org/x/sys/unix"
 
 	"keyfold/internal/agent"
 	"keyfold/internal/api"
 	"keyfold/internal/store"
 	"keyfold/internal/vault"
+	"keyfold/internal/version"
 )
 
 func init() { vault.ScryptWorkFactor = 10 }
@@ -33,27 +35,20 @@ func fileWith(t *testing.T, content string) *os.File {
 	return f
 }
 
-// openPTY returns the follower side of a new pseudo terminal.
-func openPTY(t *testing.T) *os.File {
-	t.Helper()
-	leader, err := os.OpenFile("/dev/ptmx", os.O_RDWR, 0)
-	if err != nil {
-		t.Skipf("no pty available: %v", err)
+func TestVersion(t *testing.T) {
+	runtimeDir(t)
+	var stderr bytes.Buffer
+	out := fileWith(t, "")
+	if code := run([]string{"-server", "http://127.0.0.1:1", "version"}, fileWith(t, ""), out, &stderr); code != 0 || stderr.Len() != 0 {
+		t.Fatalf("kf version: exit %d, stderr %q", code, stderr.String())
 	}
-	t.Cleanup(func() { leader.Close() })
-	if err := unix.IoctlSetPointerInt(int(leader.Fd()), unix.TIOCSPTLCK, 0); err != nil {
-		t.Fatal(err)
-	}
-	n, err := unix.IoctlGetInt(int(leader.Fd()), unix.TIOCGPTN)
+	got, err := os.ReadFile(out.Name())
 	if err != nil {
 		t.Fatal(err)
 	}
-	follower, err := os.OpenFile(fmt.Sprintf("/dev/pts/%d", n), os.O_RDWR|unix.O_NOCTTY, 0)
-	if err != nil {
-		t.Fatal(err)
+	if want := "kf " + version.Display() + "\n"; string(got) != want {
+		t.Errorf("stdout = %q, want %q", got, want)
 	}
-	t.Cleanup(func() { follower.Close() })
-	return follower
 }
 
 func TestGetRefusesTerminal(t *testing.T) {
@@ -67,6 +62,60 @@ func TestGetRefusesTerminal(t *testing.T) {
 	if !bytes.Contains(stderr.Bytes(), []byte("refusing")) {
 		t.Fatalf("stderr = %q", stderr.String())
 	}
+}
+
+func TestInitInstallTokenHeader(t *testing.T) {
+	for _, tc := range []struct{ name, token string }{
+		{"with token", "fake-install-token"},
+		{"missing token", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("KEYFOLD_INSTALL_TOKEN", tc.token)
+			mux := http.NewServeMux()
+			mux.HandleFunc("GET /api/v1/status", func(w http.ResponseWriter, r *http.Request) {
+				if len(r.Header.Values("X-Install-Token")) != 0 {
+					t.Error("the status request sent the install token")
+				}
+				io.WriteString(w, `{"initialized":false}`)
+			})
+			mux.HandleFunc("POST /api/v1/init", func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("X-Install-Token") != tc.token {
+					t.Error("the init request did not send the configured token")
+				}
+				if tc.token == "" {
+					w.WriteHeader(http.StatusForbidden)
+					io.WriteString(w, `{"error":"X-Install-Token is required and must match the install token in the server log"}`)
+					return
+				}
+				w.WriteHeader(http.StatusCreated)
+			})
+			ts := httptest.NewServer(mux)
+			defer ts.Close()
+
+			var stderr bytes.Buffer
+			err := cmdInit(&client{base: ts.URL}, func(string) (string, error) { return "fake-install-master-password", nil }, &stderr)
+			if tc.token == "" {
+				if err == nil || !strings.Contains(err.Error(), "server log") {
+					t.Fatal("a missing token must point the user to the server log")
+				}
+				return
+			}
+			if err != nil || !strings.Contains(stderr.String(), "vault initialized") {
+				t.Fatalf("init did not complete: %v", err)
+			}
+		})
+	}
+}
+
+// runtimeDir points XDG_RUNTIME_DIR at a new directory only this user can
+// write to, as the real one is: the agent refuses any other.
+func runtimeDir(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_RUNTIME_DIR", dir)
 }
 
 // setupVault starts a server on a new vault and an agent holding its identity.
@@ -85,10 +134,10 @@ func setupVault(t *testing.T) (string, *store.Store, *age.X25519Identity) {
 	if err := st.Init(wrapped, id.Recipient().String()); err != nil {
 		t.Fatal(err)
 	}
-	ts := httptest.NewServer(api.New(st, api.DefaultMaxBlob))
+	ts := httptest.NewServer(api.New(st, api.Options{}))
 	t.Cleanup(ts.Close)
 
-	t.Setenv("XDG_RUNTIME_DIR", dir)
+	runtimeDir(t)
 	l, err := agent.Listen()
 	if err != nil {
 		t.Fatal(err)
@@ -167,6 +216,10 @@ func TestMigrateThenSetKeepsFields(t *testing.T) {
 
 	// set changes the value and keeps what it was not asked to change.
 	it.Username = "fake-user"
+	it.Project = "fake-project"
+	it.Specialty = "Backend"
+	it.Languages = []string{"Go", "SQL"}
+	it.Tags = []string{"fake-tag", "fake-other"}
 	etag, _ := item(t, st, id, "fake-old")
 	ct2, err := vault.EncryptItem(it, id.Recipient())
 	if err != nil {
@@ -182,6 +235,10 @@ func TestMigrateThenSetKeepsFields(t *testing.T) {
 	if it.Value != "fake-value-456" || it.Username != "fake-user" || it.Note != "fake-note" || it.Kind != "login" {
 		t.Fatalf("after set: %+v", it)
 	}
+	if it.V != 3 || it.Project != "fake-project" || it.Specialty != "Backend" ||
+		strings.Join(it.Languages, ",") != "Go,SQL" || strings.Join(it.Tags, ",") != "fake-tag,fake-other" {
+		t.Fatalf("classification after set: %+v", it)
+	}
 
 	// Flags do change what they name, and only that.
 	args := []string{"-server", url, "set", "fake-old", "-note", "", "-kind", "token"}
@@ -191,5 +248,66 @@ func TestMigrateThenSetKeepsFields(t *testing.T) {
 	_, it = item(t, st, id, "fake-old")
 	if it.Value != "fake-value-789" || it.Note != "" || it.Kind != "token" || it.Username != "fake-user" {
 		t.Fatalf("after set with flags: %+v", it)
+	}
+}
+
+func TestSetKeepsEnvironment(t *testing.T) {
+	url, st, id := setupVault(t)
+	storeItem(t, url, vault.Item{Name: "fake-token", Kind: "token", Value: "fake-before", Environment: "prod"})
+	var stderr bytes.Buffer
+	if code := run([]string{"-server", url, "set", "fake-token"}, fileWith(t, "fake-after\n"), fileWith(t, ""), &stderr); code != 0 {
+		t.Fatalf("set: exit %d: %s", code, stderr.String())
+	}
+	if _, it := item(t, st, id, "fake-token"); it.Value != "fake-after" || it.Environment != "prod" || it.V != 5 {
+		t.Fatalf("after set: %+v", it)
+	}
+}
+
+func TestPlainHTTPIsOnlyAcceptedForLoopback(t *testing.T) {
+	// Refused before any network call; the accepted ones fail later, on a closed port.
+	for server, refused := range map[string]bool{
+		"http://192.0.2.10:8717": true,
+		"http://vault.example":   true,
+		"ftp://127.0.0.1":        true,
+		"http://127.0.0.1:1":     false,
+		"http://localhost:1":     false,
+		"http://[::1]:1":         false,
+		"https://127.0.0.1:1":    false,
+	} {
+		err := (&client{base: server}).do("GET", "/api/v1/status", nil, nil)
+		if got := err != nil && strings.Contains(err.Error(), "plain http"); got != refused {
+			t.Errorf("%s: refused = %v, want %v (error: %v)", server, got, refused, err)
+		}
+	}
+}
+
+func TestLocalCommandsIgnoreTheServerURL(t *testing.T) {
+	runtimeDir(t)
+	t.Setenv("KEYFOLD_SERVER", "http://192.0.2.10:8717")
+	var stderr bytes.Buffer
+	if code := run([]string{"lock"}, fileWith(t, ""), fileWith(t, ""), &stderr); code != 0 {
+		t.Errorf("kf lock: exit %d, stderr %q", code, stderr.String())
+	}
+}
+
+func TestRedirectIsNotFollowed(t *testing.T) {
+	var leaked string
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		leaked = r.Header.Get("Authorization") + r.Header.Get("X-TOTP-Code")
+	}))
+	t.Cleanup(elsewhere.Close)
+	hits := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		http.Redirect(w, r, elsewhere.URL, http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(ts.Close)
+
+	c := &client{base: ts.URL, token: "fake-token", totp: "123456"}
+	if err := c.do("GET", "/api/v1/items", nil, nil); err == nil {
+		t.Error("a redirect answer was taken for a success")
+	}
+	if hits != 1 || leaked != "" {
+		t.Errorf("hits = %d, headers that reached the redirect target = %q", hits, leaked)
 	}
 }

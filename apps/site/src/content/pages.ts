@@ -92,12 +92,12 @@ const security: DocPage = {
                   ["Encrypted item files", "Your master password"],
                   ["Encrypted attachments", "The vault identity"],
                   ["The encrypted identity", "A secret value"],
-                  ["The TOTP secret, when the second factor is on", "An item name"],
+                  ["The TOTP secret in cleartext, once set up", "An item name"],
                 ],
               },
             },
             {
-              p: "Its logs hold one line per request with the method, the path, the status and the duration: never a header, a body or a query string.",
+              p: "Each access log line includes the method, path, status, duration, client IP, request ID and matched route pattern when available. It omits raw headers, the body and the query string. An internal error also logs its text, which can include file paths or operating system errors.",
             },
           ],
         },
@@ -106,7 +106,7 @@ const security: DocPage = {
           title: "Why does the master password matter so much?",
           blocks: [
             {
-              p: "The encrypted identity can be downloaded by anyone who reaches the server: `GET /api/v1/identity` needs no session, since it exposes no more than a stolen disk would. The strength of the master password is what protects the vault against an offline attack.",
+              p: "Anyone who obtains a copy of the encrypted identity, for example from a stolen disk, can try master passwords offline. The master password protects the identity in that copy.",
             },
             {
               p: "That is why a new vault needs a master password of at least 16 characters, in the web UI and in `kf init`.",
@@ -119,9 +119,9 @@ const security: DocPage = {
           blocks: [
             {
               list: [
-                "API access needs a session token, obtained by decrypting a random challenge with the identity.",
-                "Tokens and challenges live in server memory only, with a 15 minute idle expiry. A server restart locks every client.",
-                "The web UI keeps the identity and the token in memory only. A copied secret is cleared from the clipboard after 30 seconds.",
+                "Protected API routes require a session token. To obtain one, decrypt a random challenge with the vault identity.",
+                "A challenge expires after 60 seconds. A session expires after 15 minutes of inactivity or 12 hours from creation, whichever comes first. Challenges and sessions live in server memory and are lost on restart.",
+                "The web UI keeps the identity and token in memory only. It tries to clear a copied secret from the clipboard after 30 seconds.",
                 "The CLI agent receives the identity through a pipe, never argv or the environment, and serves it on a `0600` socket in a `0700` directory. It exits after its TTL or on `kf lock`.",
               ],
             },
@@ -132,11 +132,12 @@ const security: DocPage = {
           title: "What does the second factor add?",
           blocks: [
             {
-              p: "The TOTP second factor is optional. With it on, the encrypted identity is only handed out against a valid code, so nobody who merely reaches the server can download it for an offline attack.",
+              p: "With TOTP off, the encrypted identity is available only to a loopback client using a loopback host with no forwarding headers. With TOTP on, downloading it requires a valid code or a live session.",
             },
             {
               list: [
-                "A code works once. Five wrong codes in a row lock every check for 15 minutes.",
+                "The server rejects reused TOTP time steps across all clients and keeps the last accepted step in memory. After a restart, a code can be accepted again if it is still within the accepted window.",
+                "Five wrong or replayed codes in a row lock TOTP checks for that client for 15 minutes. Each remote IP also has one budget of 60 calls per minute across status, vault creation, identity download, challenge and session routes. Direct loopback requests have a separate TOTP limit and are exempt from the call limit.",
                 "The TOTP secret is stored in clear in `data/totp.json` (mode 0600), because the server must read it alone. TOTP does not protect a stolen disk.",
                 "Phone lost: run `keyfold-server -disable-totp -data ./data` on the server machine.",
               ],
@@ -149,8 +150,8 @@ const security: DocPage = {
           blocks: [
             {
               list: [
-                "TLS: the server speaks plain HTTP and must stay on `127.0.0.1`.",
-                "Backups of the data directory are not handled.",
+                "The server speaks plain HTTP and listens on loopback by default. For other devices, use a TLS reverse proxy on the same machine. Declare its host with `-allowed-hosts` and have the proxy preserve `Host` and append the client IP to `X-Forwarded-For`. The server accepts loopback and declared hosts.",
+                "`packaging/` includes a container, a Compose example with Caddy and a systemd unit. The backup timer keeps local archives. Copying them off the machine is up to the operator.",
                 "Changing the master password re-wraps the same identity: items are not re-encrypted, and an older copy of the data directory still opens with the old password.",
                 "The breach check against Have I Been Pwned is off by default. Once allowed in Settings, it runs on request and sends only the first 5 characters of each password's SHA-1.",
               ],
@@ -196,12 +197,12 @@ const security: DocPage = {
                   ["Les fichiers chiffrés des éléments", "Votre mot de passe principal"],
                   ["Les pièces jointes chiffrées", "L'identité du coffre"],
                   ["L'identité chiffrée", "La valeur d'un secret"],
-                  ["Le secret TOTP, si le second facteur est activé", "Le nom d'un élément"],
+                  ["Le secret TOTP en clair, dès sa configuration", "Le nom d'un élément"],
                 ],
               },
             },
             {
-              p: "Ses journaux contiennent une ligne par requête avec la méthode, le chemin, le statut et la durée : jamais d'en-tête, de corps ni de chaîne de requête.",
+              p: "Chaque ligne du journal d'accès indique la méthode, le chemin, le statut, la durée, l'adresse IP du client, l'identifiant de requête et, si disponible, le motif de la route. Elle omet les en-têtes bruts, le corps et la chaîne de requête. Une erreur interne est aussi journalisée avec son texte, qui peut inclure des chemins de fichiers ou des erreurs du système.",
             },
           ],
         },
@@ -210,7 +211,7 @@ const security: DocPage = {
           title: "Pourquoi le mot de passe principal compte-t-il autant ?",
           blocks: [
             {
-              p: "L'identité chiffrée peut être téléchargée par quiconque atteint le serveur : `GET /api/v1/identity` ne demande pas de session, car il n'expose rien de plus qu'un disque volé. C'est la robustesse du mot de passe principal qui protège le coffre contre une attaque hors ligne.",
+              p: "Quiconque obtient une copie de l'identité chiffrée, par exemple sur un disque volé, peut essayer des mots de passe hors ligne. Le mot de passe principal protège l'identité dans cette copie.",
             },
             {
               p: "C'est pourquoi un nouveau coffre exige un mot de passe principal d'au moins 16 caractères, dans l'interface web comme avec `kf init`.",
@@ -223,9 +224,9 @@ const security: DocPage = {
           blocks: [
             {
               list: [
-                "L'accès à l'API demande un jeton de session, obtenu en déchiffrant un défi aléatoire avec l'identité.",
-                "Les jetons et les défis ne vivent que dans la mémoire du serveur, avec une expiration après 15 minutes d'inactivité. Un redémarrage du serveur verrouille tous les clients.",
-                "L'interface web garde l'identité et le jeton en mémoire seulement. Un secret copié est effacé du presse-papiers après 30 secondes.",
+                "Les routes protégées de l'API exigent un jeton de session. Pour l'obtenir, déchiffrez un défi aléatoire avec l'identité du coffre.",
+                "Un défi expire après 60 secondes. Une session expire après 15 minutes d'inactivité ou 12 heures après sa création, au premier des deux délais. Les défis et les sessions sont gardés en mémoire et disparaissent au redémarrage du serveur.",
+                "L'interface web garde l'identité et le jeton en mémoire seulement. Elle tente d'effacer un secret copié du presse-papiers après 30 secondes.",
                 "L'agent de la CLI reçoit l'identité par un tube, jamais par argv ni par l'environnement, et la sert sur un socket `0600` dans un dossier `0700`. Il s'arrête à la fin de sa durée de vie ou sur `kf lock`.",
               ],
             },
@@ -236,11 +237,12 @@ const security: DocPage = {
           title: "Qu'apporte le second facteur ?",
           blocks: [
             {
-              p: "Le second facteur TOTP est optionnel. Une fois activé, l'identité chiffrée n'est remise que contre un code valide : quelqu'un qui atteint seulement le serveur ne peut plus la télécharger pour une attaque hors ligne.",
+              p: "Sans TOTP, l'identité chiffrée est réservée aux clients en boucle locale qui utilisent un nom d'hôte de boucle locale, sans en-tête de transfert. Avec le TOTP activé, son téléchargement exige un code valide ou une session active.",
             },
             {
               list: [
-                "Un code ne sert qu'une fois. Cinq codes faux d'affilée bloquent toute vérification pendant 15 minutes.",
+                "Le serveur refuse de réutiliser un créneau TOTP, tous clients confondus, et garde en mémoire le dernier créneau accepté. Après un redémarrage, un code peut être accepté à nouveau s'il est encore dans la fenêtre admise.",
+                "Cinq codes incorrects ou rejoués d'affilée bloquent les vérifications TOTP de ce client pendant 15 minutes. Chaque adresse IP distante dispose aussi de 60 appels par minute au total pour l'état du coffre, sa création, le téléchargement de l'identité, le défi et la session. Les requêtes directes en boucle locale ont une limite TOTP distincte et sont exemptées de la limite d'appels.",
                 "Le secret TOTP est stocké en clair dans `data/totp.json` (mode 0600), car le serveur doit pouvoir le lire seul. Le TOTP ne protège pas un disque volé.",
                 "Téléphone perdu : lancez `keyfold-server -disable-totp -data ./data` sur la machine du serveur.",
               ],
@@ -253,8 +255,8 @@ const security: DocPage = {
           blocks: [
             {
               list: [
-                "TLS : le serveur parle HTTP en clair et doit rester sur `127.0.0.1`.",
-                "Les sauvegardes du dossier de données ne sont pas prises en charge.",
+                "Le serveur parle HTTP en clair et écoute en boucle locale par défaut. Pour les autres appareils, utilisez un proxy inverse TLS sur la même machine. Déclarez son nom d'hôte avec `-allowed-hosts`. Le proxy doit conserver `Host` et ajouter l'adresse IP du client à `X-Forwarded-For`. Le serveur accepte les noms d'hôte de boucle locale et ceux déclarés.",
+                "`packaging/` fournit un conteneur, un exemple Compose avec Caddy et une unité systemd. Le minuteur de sauvegarde conserve des archives locales. Leur copie hors de la machine revient à l'opérateur.",
                 "Changer le mot de passe principal ré-enveloppe la même identité : les éléments ne sont pas rechiffrés, et une ancienne copie du dossier de données s'ouvre toujours avec l'ancien mot de passe.",
                 "La vérification des fuites auprès de Have I Been Pwned est désactivée par défaut. Une fois autorisée dans les Paramètres, elle s'exécute à la demande et n'envoie que les 5 premiers caractères du SHA-1 de chaque mot de passe.",
               ],
@@ -283,10 +285,10 @@ const cli: DocPage = {
           id: "install",
           title: "How do I install kf and reach the server?",
           blocks: [
-            { p: "Build the binary from the repository:" },
+            { p: "`kf` builds for Linux and macOS. Build the binary from the repository:" },
             { code: "go build -o bin/kf ./apps/kf" },
             {
-              p: "The server URL comes from the `-server` flag, then the `KEYFOLD_SERVER` environment variable, then `http://127.0.0.1:8717`.",
+              p: "The server URL comes from the `-server` flag, then the `KEYFOLD_SERVER` environment variable, then `http://127.0.0.1:8717`. A URL that is not a loopback address must start with `https://`.",
             },
           ],
         },
@@ -299,8 +301,8 @@ const cli: DocPage = {
             },
             {
               list: [
-                "`kf init` asks the master password twice, without echo, and creates the vault.",
-                "`kf unlock [-ttl 1h]` asks the master password, decrypts the identity and starts a background agent on `$XDG_RUNTIME_DIR/keyfold/agent.sock`.",
+                "`kf init` asks for the master password twice, without echo, and creates the vault. For remote creation, set `KEYFOLD_INSTALL_TOKEN` to the install token from the server log.",
+                "`kf unlock [-ttl 1h]` asks for the master password and, if TOTP is enabled, a code. It decrypts the identity and starts a background agent on `$XDG_RUNTIME_DIR/keyfold/agent.sock` or, if that variable is unset, on `keyfold-<uid>/agent.sock` in the temp directory.",
                 "`kf lock` stops the agent.",
               ],
             },
@@ -336,7 +338,10 @@ const cli: DocPage = {
                     "Prints a random password, or a passphrase of `N` words from the EFF large wordlist. Stores nothing: pipe it into `kf set`.",
                   ],
                   ["`kf totp <name>`", "Prints the item's current TOTP code."],
-                  ["`kf list`", "Names and kinds, never values."],
+                  [
+                    "`kf list`",
+                    "Prints name, kind, project and environment in four tab-separated columns. Unset fields leave empty columns. Values are never printed.",
+                  ],
                   ["`kf rm <name>`", "Deletes an item and its attachments."],
                   [
                     "`kf migrate [-apply]`",
@@ -388,10 +393,10 @@ const cli: DocPage = {
           id: "installation",
           title: "Comment installer kf et joindre le serveur ?",
           blocks: [
-            { p: "Compilez le binaire depuis le dépôt :" },
+            { p: "`kf` se compile pour Linux et macOS. Compilez le binaire depuis le dépôt :" },
             { code: "go build -o bin/kf ./apps/kf" },
             {
-              p: "L'adresse du serveur vient de l'option `-server`, puis de la variable d'environnement `KEYFOLD_SERVER`, puis de `http://127.0.0.1:8717`.",
+              p: "L'adresse du serveur vient de l'option `-server`, puis de la variable d'environnement `KEYFOLD_SERVER`, puis de `http://127.0.0.1:8717`. Une adresse qui n'est pas en boucle locale doit commencer par `https://`.",
             },
           ],
         },
@@ -404,8 +409,8 @@ const cli: DocPage = {
             },
             {
               list: [
-                "`kf init` demande deux fois le mot de passe principal, sans l'afficher, et crée le coffre.",
-                "`kf unlock [-ttl 1h]` demande le mot de passe principal, déchiffre l'identité et lance un agent en arrière-plan sur `$XDG_RUNTIME_DIR/keyfold/agent.sock`.",
+                "`kf init` demande deux fois le mot de passe principal, sans l'afficher, et crée le coffre. Pour une création à distance, définissez `KEYFOLD_INSTALL_TOKEN` avec le jeton d'installation du journal du serveur.",
+                "`kf unlock [-ttl 1h]` demande le mot de passe principal et, si le TOTP est activé, un code. La commande déchiffre l'identité et lance un agent en arrière-plan sur `$XDG_RUNTIME_DIR/keyfold/agent.sock` ou, si cette variable est absente, sur `keyfold-<uid>/agent.sock` dans le dossier temporaire.",
                 "`kf lock` arrête l'agent.",
               ],
             },
@@ -441,7 +446,10 @@ const cli: DocPage = {
                     "Affiche un mot de passe aléatoire, ou une phrase de passe de `N` mots tirés de la grande liste EFF. Ne stocke rien : redirigez-le vers `kf set`.",
                   ],
                   ["`kf totp <name>`", "Affiche le code TOTP courant de l'élément."],
-                  ["`kf list`", "Les noms et les types, jamais les valeurs."],
+                  [
+                    "`kf list`",
+                    "Affiche le nom, le type, le projet et l'environnement dans quatre colonnes séparées par des tabulations. Les champs absents laissent des colonnes vides. Les valeurs ne sont jamais affichées.",
+                  ],
                   ["`kf rm <name>`", "Supprime un élément et ses pièces jointes."],
                   [
                     "`kf migrate [-apply]`",
@@ -492,9 +500,9 @@ const mcp: DocPage = {
       nav: "MCP",
       title: "MCP server: a secrets vault for AI agents | Keyfold",
       description:
-        "kf mcp gives an AI agent three tools: list items, create a generated secret, report vault health. No tool returns a secret value, and none edits or deletes.",
+        "kf mcp gives an AI agent four tools: list items, create a generated secret, import a declared env file, report vault health. No tool returns a secret value, and none edits or deletes.",
       h1: "MCP server for AI agents",
-      lede: "`kf mcp` is a Model Context Protocol server built into the Keyfold command line. An AI agent can list the vault, create a generated secret and read the vault's health, and no tool ever returns a secret value.",
+      lede: "`kf mcp` is a Model Context Protocol server built into the Keyfold command line. An AI agent can list the vault, create a generated secret, import an env file you declared and read the vault's health, and no tool ever returns a secret value.",
       sections: [
         {
           id: "tools",
@@ -504,10 +512,17 @@ const mcp: DocPage = {
               table: {
                 head: ["Tool", "What it returns or does"],
                 rows: [
-                  ["`list_items`", "The name, kind, creation date and last modification date of each item."],
+                  [
+                    "`list_items`",
+                    "The name, kind, optional project and environment, and creation and last modification dates of each item.",
+                  ],
                   [
                     "`generate_item`",
                     "Creates an item holding a random secret, generated and encrypted locally. It refuses a name that already exists.",
+                  ],
+                  [
+                    "`import_env`",
+                    "Copies variables of a remote env file into items named `<source>.<KEY>`. Declare the source in `~/.config/keyfold/sources.json` and set optional `project` and `environment` fields for new items. Allowed environments are `prod`, `preprod`, and `local`. Items with an environment use encrypted format v5. kf reads the file over ssh, encrypts the values locally, and returns a status per key only. It never overwrites an item.",
                   ],
                   [
                     "`vault_health`",
@@ -538,6 +553,9 @@ const mcp: DocPage = {
               p: "`kf mcp` serves its tools on stdin and stdout. It uses the local agent, so run `kf unlock` first. To register it in Claude Code, from the repository, after `make build`:",
             },
             { code: 'claude mcp add keyfold -- "$PWD/bin/kf" mcp' },
+            {
+              p: "Code mode: `kf mcp -code-mode` serves two tools instead of four. `search` describes the functions of a `kf` object (the same operations as the tools), and `execute` runs JavaScript that calls them, so one call can chain several operations and return only what the agent needs. The interpreter sees `kf` and `console.log` only: no file, network or process access, 30 seconds and 64 KiB at most.",
+            },
           ],
         },
         {
@@ -557,9 +575,9 @@ const mcp: DocPage = {
       nav: "MCP",
       title: "Serveur MCP : un coffre de secrets pour agents IA | Keyfold",
       description:
-        "kf mcp donne trois outils à un agent IA : lister, créer un secret généré, lire l'état du coffre. Aucun outil ne renvoie de valeur ni ne modifie rien.",
+        "kf mcp donne quatre outils à un agent IA : lister, créer un secret généré, importer un fichier env déclaré, lire l'état du coffre. Aucun outil ne renvoie de valeur ni ne modifie rien.",
       h1: "Serveur MCP pour agents IA",
-      lede: "`kf mcp` est un serveur Model Context Protocol intégré à la ligne de commande de Keyfold. Un agent IA peut lister le coffre, créer un secret généré et lire l'état du coffre, et aucun outil ne renvoie jamais la valeur d'un secret.",
+      lede: "`kf mcp` est un serveur Model Context Protocol intégré à la ligne de commande de Keyfold. Un agent IA peut lister le coffre, créer un secret généré, importer un fichier env que vous avez déclaré et lire l'état du coffre, et aucun outil ne renvoie jamais la valeur d'un secret.",
       sections: [
         {
           id: "outils",
@@ -571,11 +589,15 @@ const mcp: DocPage = {
                 rows: [
                   [
                     "`list_items`",
-                    "Le nom, le type, la date de création et la date de dernière modification de chaque élément.",
+                    "Le nom, le type, le projet et l'environnement s'ils sont renseignés, ainsi que les dates de création et de dernière modification de chaque élément.",
                   ],
                   [
                     "`generate_item`",
                     "Crée un élément contenant un secret aléatoire, généré et chiffré en local. Il refuse un nom déjà pris.",
+                  ],
+                  [
+                    "`import_env`",
+                    "Copie les variables d'un fichier env distant dans des éléments nommés `<source>.<KEY>`. Déclarez la source dans `~/.config/keyfold/sources.json` et renseignez les champs facultatifs `project` et `environment` pour les nouveaux éléments. Les environnements autorisés sont `prod`, `preprod` et `local`. Les éléments avec un environnement utilisent le format chiffré v5. kf lit le fichier par ssh, chiffre les valeurs en local et ne renvoie qu'un statut par clé. Il n'écrase jamais un élément.",
                   ],
                   [
                     "`vault_health`",
@@ -606,6 +628,9 @@ const mcp: DocPage = {
               p: "`kf mcp` sert ses outils sur l'entrée et la sortie standard. Il passe par l'agent local : lancez d'abord `kf unlock`. Pour l'enregistrer dans Claude Code, depuis le dépôt, après `make build` :",
             },
             { code: 'claude mcp add keyfold -- "$PWD/bin/kf" mcp' },
+            {
+              p: "Code mode : `kf mcp -code-mode` sert deux outils au lieu de quatre. `search` décrit les fonctions d'un objet `kf` (les mêmes opérations que les outils), et `execute` exécute du JavaScript qui les appelle : un seul appel enchaîne plusieurs opérations et ne renvoie que ce dont l'agent a besoin. L'interpréteur ne voit que `kf` et `console.log` : ni fichier, ni réseau, ni processus, 30 secondes et 64 Kio au plus.",
+            },
           ],
         },
         {
@@ -625,99 +650,190 @@ const mcp: DocPage = {
 
 const selfHosting: DocPage = {
   key: "self-hosting",
-  updated: "2026-11-11",
+  updated: "2026-11-25",
   content: {
     en: {
       slug: "self-hosting",
       nav: "Self-hosting",
       title: "Self-hosting: run your own secrets vault | Keyfold",
       description:
-        "Run Keyfold on your own machine: one Go server, a data directory of encrypted files, a web UI and a command line. What to start, and the limits to know first.",
+        "Install Keyfold on Linux, connect over HTTPS, create the vault, back it up, test a restore and update it.",
       h1: "Self-hosting Keyfold",
-      lede: "Keyfold runs on your own machine: one Go server that stores encrypted files in a data directory, with a web UI and a command line. Nothing is hosted for you.",
+      lede: "Run Keyfold on a Linux machine you control. Set up HTTPS, create your vault and enable its second factor, then back up your data before your first update.",
       sections: [
         {
           id: "components",
-          title: "What do I run?",
+          title: "What do I need?",
           blocks: [
             {
-              table: {
-                head: ["Part", "Role"],
-                rows: [
-                  [
-                    "`keyfold-server`",
-                    "The vault HTTP server. It stores encrypted files in a data directory and can serve the web UI.",
-                  ],
-                  ["`kf`", "The command line tool, with the MCP server for AI agents."],
-                  ["Web UI", "A React app, built as static files, opened in the browser."],
-                ],
-              },
-            },
-            {
-              p: "All three share one vault. The repository holds one Go module and one Bun workspace; `make help` lists every command.",
+              p: "Use a Linux machine with Docker and Compose, or install the binaries and web UI on a Linux host with systemd. Choose a host name that your devices resolve to the HTTPS endpoint. Replace the example names `vault.example.com` for Caddy and `coffre.exemple.ts.net` for Tailscale with yours.",
             },
           ],
         },
         {
           id: "start",
-          title: "How do I start the server?",
+          title: "How do I install Keyfold?",
           blocks: [
-            { p: "With its defaults, the server listens on `127.0.0.1:8717` and keeps its data in `./data`:" },
-            { code: "go run ./apps/keyfold-server" },
-            { p: "Each default has a flag, and `-web` serves the built web UI when the directory exists:" },
-            { code: "go run ./apps/keyfold-server -listen 127.0.0.1:8717 -data ./data -web ./apps/web/dist" },
             {
-              p: "`make build` builds the `kf` and `keyfold-server` binaries into `bin/`, and `make web-build` builds the web UI into `apps/web/dist`.",
+              p: "Find the source and releases at https://github.com/dev-toolings/keyfold. When a version tag is pushed, `.github/workflows/release.yml` publishes GitHub release archives named `keyfold_<tag>_<os>_<arch>.tar.gz` and `checksums.txt`. Choose `linux` or `darwin` and `amd64` or `arm64`. All archives include `kf`. Linux archives also include `keyfold-server`, the built `web/` directory and `packaging/`. The workflow publishes `ghcr.io/dev-toolings/keyfold:<version>` for Linux, with the leading `v` removed from the release tag.",
+            },
+            {
+              p: "With Docker, use `packaging/compose.yml` and the adjacent `Caddyfile`. Set the `vault` service's `image` to the tagged GHCR image. Until a release exists, run `make image` from a clone and keep the kit's local image reference. If the printed tag differs from `dev`, set `VERSION` to the part after `keyfold:`. Keep the same Compose project for setup and updates so it reuses the `vault-data` volume mounted at `/data`.",
+            },
+            {
+              p: "With systemd, put `keyfold-server` at `/usr/local/bin/keyfold-server`, the contents of the built web UI in `/usr/local/share/keyfold/web` and `packaging/keyfold.service` at `/etc/systemd/system/keyfold.service`. The unit keeps the vault in `/var/lib/keyfold`. Put `kf` on the command path of the devices that need it. To build from a clone with Go and Bun installed, run `make install`, `make build` and `make web-build`. Use the binaries from `bin/` and the UI from `apps/web/dist`.",
+            },
+          ],
+        },
+        {
+          id: "private-access",
+          title: "How do I set up private HTTPS access?",
+          blocks: [
+            {
+              p: "Prefer private HTTPS access. Keep Keyfold listening on loopback at `127.0.0.1:8717` and put the HTTPS proxy in the same network namespace. With Compose, Caddy shares the vault's loopback and the kit publishes TCP port 443 for HTTPS. Restrict that port to your private network. Use `KEYFOLD_HOST` to set the Caddy host name and populate `KEYFOLD_ALLOWED_HOSTS`. Use the same host name each time you start the stack.",
+            },
+            { code: "KEYFOLD_HOST=vault.example.com docker compose -f packaging/compose.yml up -d" },
+            {
+              p: "Trust Caddy's root CA certificate from the `caddy-data` volume on each client device. With systemd, set `KEYFOLD_ALLOWED_HOSTS` in the installed unit to your HTTPS host name. Run Caddy on the same machine, use the site block from `packaging/Caddyfile` with your host name and point it at `127.0.0.1:8717`. Serve HTTPS on port 443 for the private network and trust this Caddy instance's internal CA on each device.",
+            },
+            { code: "sudo systemctl enable --now keyfold.service" },
+            {
+              p: "On a host installation you can also use Tailscale Serve (`tailscale serve`). Set `KEYFOLD_ALLOWED_HOSTS` to the HTTPS name of the machine on your tailnet, for example `coffre.exemple.ts.net`, and configure Serve to forward private HTTPS traffic to `http://127.0.0.1:8717`. Run both checks below before using it.",
+            },
+            {
+              p: "The proxy must pass the original `Host`, whose name must be listed in `KEYFOLD_ALLOWED_HOSTS`. It must append the connecting client's IP address to `X-Forwarded-For`.",
+            },
+            {
+              p: "If a proxy on the same machine replaces `Host` with the loopback upstream and sends no forwarding headers, Keyfold treats remote requests as local. Remote clients can then create the vault without the install token, bypass per-client rate limits, and retrieve the encrypted identity without enabling TOTP.",
+            },
+            {
+              p: "Caddy's `reverse_proxy`, used in this kit, does both by default. Once Keyfold is running, check both from another device through the proxy before you create the vault. You can send the GET requests by opening the two paths on your HTTPS host in a browser.",
+            },
+            { p: "1. Send `GET /api/v1/alive`. HTTP 404 confirms that Keyfold treats the request as remote." },
+            {
+              p: "2. Send `GET /api/v1/status` because the alive probe is logged at debug level. Read the server access log with `docker compose -f packaging/compose.yml logs vault` for Compose or `journalctl -u keyfold` for systemd. The request's `client` field must show the device's IP address, confirming Keyfold uses the forwarded address. `127.0.0.1` or `::1` indicates the proxy's loopback address.",
+            },
+          ],
+        },
+        {
+          id: "public-access",
+          title: "Can I expose Keyfold on the internet?",
+          blocks: [
+            {
+              p: "Use Caddy with a public DNS name and a publicly trusted certificate. Point the name at the proxy, allow inbound TCP 443, and remove `tls internal` from the Caddy site block. Keep the same upstream and allowed host and run the two proxy checks before creating the vault. If Caddy needs DNS validation, configure the ACME DNS challenge with a DNS provider module as described in `packaging/Caddyfile`.",
+            },
+            {
+              p: "This exposes the web UI and API to anyone on the internet. Protected API routes still require a session. Remote unlock requires TOTP so a client must present a valid code or already have a live session to download the encrypted identity. A copy of that identity allows offline guesses of your master password.",
             },
           ],
         },
         {
           id: "vault",
-          title: "How do I create the vault?",
+          title: "How do I create and unlock the vault?",
           blocks: [
             {
-              list: [
-                "Create it in the web UI or with `kf init`. The master password must be at least 16 characters.",
-                "The TOTP second factor is optional. It is offered right after the vault is created, and later in Settings, where the master password can also be changed.",
-                "The vault app lives under `/personal`: unlock, dashboard, vault, health and settings.",
-              ],
+              p: "Set a master password of at least 16 characters. Create the vault in the web UI on the server machine, then scan the QR code with your authenticator and confirm with a code. You can also enable the second factor later in Settings on the server machine. While TOTP is off, Keyfold refuses to hand the encrypted identity to a remote client, even if the vault was created remotely.",
+            },
+            {
+              p: "For systemd, open `http://127.0.0.1:8717` directly. On a headless host you can use a local SSH port forward to the server's loopback, then open the forwarded loopback address in your browser. The connection must reach Keyfold with a loopback host and no HTTP forwarding headers.",
+            },
+            {
+              p: "For Docker on Linux, after checking the proxy, take the stack down with the command below. It keeps the named volumes.",
+            },
+            { code: "docker compose -f packaging/compose.yml down" },
+            {
+              p: "Temporarily replace the `vault` service's `ports` block with `network_mode: host` in `packaging/compose.yml`. Start only the `vault` service so its loopback is the host's loopback for setup.",
+            },
+            { code: "KEYFOLD_HOST=vault.example.com docker compose -f packaging/compose.yml up -d vault" },
+            {
+              p: "Open `http://127.0.0.1:8717` as for a host installation and enable TOTP. Take the stack down again with the same command, restore the original `ports` block in place of `network_mode: host`, then start the full stack with the HTTPS command above. Retest the two proxy checks.",
+            },
+            {
+              p: "If you create the vault remotely, read the single-use `installToken` from the server's startup log using the log command above. A restart before creation generates a new token. When you enter the token in the web form, the web UI sends it in `X-Install-Token`. The vault is created, then the page tries to unlock it and reports that you must enable the second factor on the server machine. Nothing is lost. Do not create the vault again. Open Keyfold over direct loopback as described above, unlock with the same master password and enable TOTP in Settings. Then reload the remote page and unlock with your master password and TOTP code. For remote `kf init`, set `KEYFOLD_INSTALL_TOKEN` to the install token, target the HTTPS URL and complete the same TOTP setup before unlocking remotely.",
             },
           ],
         },
         {
-          id: "web-ui",
-          title: "What does the web UI give me?",
+          id: "connect-cli",
+          title: "How do I connect kf from another device?",
           blocks: [
             {
-              list: [
-                "An item sheet holds an identifier, the secret, web addresses, a TOTP secret with its live code, custom fields, a note, a folder, a favorite flag, attachments and the 20 previous values, each one restorable.",
-                "The generator makes 24 character passwords or 6 word EFF passphrases.",
-                "The dashboard lists items to renew, reused values, short passwords, weak passwords (estimated entropy under 60 bits) and websites without a TOTP secret.",
-                "The health page shows what the server stores: item and attachment counts, sizes, free disk space, TOTP and open sessions.",
-                "Attachments go up to 100 MiB each by default, a limit set by `keyfold-server -max-blob`.",
-              ],
+              p: "Install `kf` for the device and make sure it trusts the HTTPS certificate. Choose the URL you configured, for example `https://vault.example.com` or `https://coffre.exemple.ts.net`. The CLI refuses plain HTTP for non-loopback addresses.",
+            },
+            { code: "export KEYFOLD_SERVER=https://vault.example.com\nkf version\nkf unlock\nkf list" },
+            {
+              p: "`kf version` prints the local build version and commit, if available. `kf unlock` asks for your master password and TOTP code, then starts a local background agent that holds the decrypted identity. `kf list` uses that agent to access the vault and prints each item's name, kind, project and environment. Run `kf lock` to stop the agent when you finish.",
             },
           ],
         },
         {
-          id: "logs",
-          title: "What does the server log?",
+          id: "backup-restore",
+          title: "How do I back up and restore the vault?",
           blocks: [
             {
-              p: "Logs go to stdout, one line per request, with a `requestId` that is also sent as the `X-Request-Id` header. They are JSON by default; `KEYFOLD_ENV=development` prints colored one-line logs instead, and `NO_COLOR=1` removes the colors.",
+              p: "On a host installation, run the backup with sudo to read the vault data. These commands create a new private directory in your home directory and make your account the owner of the 0600 archive.",
             },
-            { p: "Only the method, the path, the status and the duration are logged." },
+            {
+              code: 'backup_dir=$(mktemp -d "$HOME/keyfold-backup.XXXXXXXX") &&\nsudo /usr/local/bin/keyfold-server -data /var/lib/keyfold -backup "$backup_dir/vault.tar" &&\nsudo chown "$(id -u):$(id -g)" "$backup_dir/vault.tar"',
+            },
+            {
+              p: "For Compose, run these commands from the directory that contains `packaging/`, using your regular account with Docker access. Compose creates the archive in the writable `/data` volume and copies it into a new private directory under your home directory. By default, the local copy belongs to the account that runs `docker compose cp`. The last command removes the staged archive from the volume after the copy is ready.",
+            },
+            {
+              code: 'backup_dir=$(mktemp -d "$HOME/keyfold-backup.XXXXXXXX") &&\nstaged_archive="/data/$(basename "$backup_dir").tar" &&\ndocker compose -f packaging/compose.yml exec -T vault keyfold-server -data /data -backup "$staged_archive" &&\ndocker compose -f packaging/compose.yml cp "vault:$staged_archive" "$backup_dir/vault.tar" &&\nchmod 600 "$backup_dir/vault.tar" &&\ndocker compose -f packaging/compose.yml exec -T vault rm "$staged_archive"',
+            },
+            {
+              p: "If a step fails after `staged_archive` is set, run this cleanup command in the same shell before retrying the backup.",
+            },
+            { code: 'docker compose -f packaging/compose.yml exec -T vault rm -f "$staged_archive"' },
+            {
+              p: "The archive contains the encrypted identity, items and attachments, plus the public recipient, the layout version and `totp.json` in clear if TOTP is configured. An online backup reads whole files, but a concurrent attachment deletion can leave an archived item missing its attachment. Pause writes while backing up before an update. Copy archives regularly to storage off the machine with restricted access.",
+            },
+            {
+              p: "For a host installation, set up the kit's systemd timer from the directory that contains `packaging/`.",
+            },
+            {
+              code: "sudo install -m 0755 packaging/keyfold-backup.sh /usr/local/bin/keyfold-backup\nsudo install -m 0644 packaging/keyfold-backup.service packaging/keyfold-backup.timer /etc/systemd/system/\nsudo systemctl daemon-reload\nsudo systemctl enable --now keyfold-backup.timer",
+            },
+            {
+              p: "The timer runs daily, catches up after downtime and retains up to 14 archives named `keyfold-YYYYMMDDTHHMMSSZ.tar` in UTC. On the host they live in `/var/lib/private/keyfold-backups`, linked from `/var/lib/keyfold-backups`. Once an archive exists, use sudo to list and copy it. When `read` waits for input, enter the name of the archive you want. The copy belongs to your account and has mode 0600.",
+            },
+            {
+              code: 'sudo ls -1 /var/lib/private/keyfold-backups &&\nread -r timer_archive &&\nbackup_dir=$(mktemp -d "$HOME/keyfold-backup.XXXXXXXX") &&\nsudo install -m 600 -o "$(id -u)" -g "$(id -g)" "/var/lib/private/keyfold-backups/$timer_archive" "$backup_dir/vault.tar"',
+            },
+            {
+              p: "For a restore drill on a machine with the binaries and web UI, use the private directory from one of the steps above. If you moved the archive to another machine, set `backup_dir` to the private directory that holds `vault.tar`. Run the restore as your regular user. The `new` directory must be missing or empty.",
+            },
+            { code: 'keyfold-server -data "$backup_dir/new" -restore "$backup_dir/vault.tar"' },
+            {
+              p: "Start the restored copy on a separate loopback port. Use the original master password and authenticator, check the item count and open a downloaded attachment. Shut down the drill and remove the restored copy when done. The full README procedure is at https://github.com/dev-toolings/keyfold/blob/main/README.md#restore-drill",
+            },
+          ],
+        },
+        {
+          id: "update",
+          title: "How do I update or roll back?",
+          blocks: [
+            {
+              list: [
+                "Read `CHANGELOG.md` for the target version. Back up the vault before upgrading, and keep the previous image tag or release archive available.",
+                "For Compose, take the stack down while keeping volumes, replace the vault image tag and start the stack again. With systemd, replace the binaries and web UI with files from the same release, then run `sudo systemctl restart keyfold.service`.",
+                "Run `keyfold-server -version` on the host or inside the `vault` container to check the server binary. Run `kf version` on any updated device to check the CLI. Unlock over HTTPS and check that the vault opens.",
+                "To roll back, stop the updated server and switch back to the previous version. The data directory records a layout version in `version`. An older server refuses to open a directory with a newer layout. If the layout changed, restore the pre-update archive into a fresh directory or volume, use that data with the previous server, and keep the newer data separate. This restores the vault as it was at backup time.",
+              ],
+            },
           ],
         },
         {
           id: "limits",
-          title: "What is not done yet?",
+          title: "What limits should I know?",
           blocks: [
             {
               list: [
-                "TLS: the server speaks plain HTTP and must stay on `127.0.0.1`.",
-                "Hosting: there is no service unit, container or reverse proxy setup.",
-                "Backups of the data directory are yours to make.",
+                "One user and one vault. Keyfold has a web UI and CLI. There is no browser extension or mobile app.",
+                "The server is Unix-only and tested on Linux. It serves plain HTTP to the HTTPS proxy.",
+                "The TOTP secret is stored in clear in `totp.json` on disk and in backups. Protect both.",
+                "Remote rate limits use the full client IP address, including for IPv6. The proxy must preserve `Host` and append the client IP to `X-Forwarded-For`. Keyfold uses the last address in that header when the proxy connects over loopback.",
               ],
             },
           ],
@@ -729,99 +845,185 @@ const selfHosting: DocPage = {
       nav: "Auto-hébergement",
       title: "Auto-hébergement : votre propre coffre de secrets | Keyfold",
       description:
-        "Faites tourner Keyfold sur votre machine : un serveur Go, un dossier de fichiers chiffrés, une interface web et une CLI. Quoi lancer, et ses limites.",
+        "Installez Keyfold sur Linux, connectez-vous en HTTPS, créez le coffre, sauvegardez-le, testez sa restauration et mettez-le à jour.",
       h1: "Auto-héberger Keyfold",
-      lede: "Keyfold tourne sur votre propre machine : un serveur Go qui range des fichiers chiffrés dans un dossier de données, avec une interface web et une ligne de commande. Rien n'est hébergé pour vous.",
+      lede: "Installez Keyfold sur une machine Linux que vous contrôlez. Configurez HTTPS, créez votre coffre et activez son second facteur, puis sauvegardez vos données avant la première mise à jour.",
       sections: [
         {
           id: "composants",
-          title: "Que faut-il lancer ?",
+          title: "De quoi ai-je besoin ?",
           blocks: [
             {
-              table: {
-                head: ["Partie", "Rôle"],
-                rows: [
-                  [
-                    "`keyfold-server`",
-                    "Le serveur HTTP du coffre. Il range des fichiers chiffrés dans un dossier de données et peut servir l'interface web.",
-                  ],
-                  ["`kf`", "L'outil en ligne de commande, avec le serveur MCP pour les agents IA."],
-                  [
-                    "Interface web",
-                    "Une application React, construite en fichiers statiques, ouverte dans le navigateur.",
-                  ],
-                ],
-              },
-            },
-            {
-              p: "Les trois partagent un même coffre. Le dépôt contient un module Go et un espace de travail Bun ; `make help` liste toutes les commandes.",
+              p: "Utilisez une machine Linux avec Docker et Compose, ou installez les binaires et l'interface web sur un hôte Linux avec systemd. Choisissez un nom d'hôte que vos appareils résolvent vers le point d'accès HTTPS. Remplacez les noms d'exemple `vault.example.com` pour Caddy et `coffre.exemple.ts.net` pour Tailscale par les vôtres.",
             },
           ],
         },
         {
           id: "demarrage",
-          title: "Comment démarrer le serveur ?",
+          title: "Comment installer Keyfold ?",
           blocks: [
             {
-              p: "Avec ses valeurs par défaut, le serveur écoute sur `127.0.0.1:8717` et garde ses données dans `./data` :",
+              p: "Le code source et les versions publiées sont disponibles sur https://github.com/dev-toolings/keyfold. Lorsqu'un tag de version est poussé, `.github/workflows/release.yml` publie sur GitHub des archives nommées `keyfold_<tag>_<os>_<arch>.tar.gz` et le fichier `checksums.txt`. Choisissez `linux` ou `darwin`, puis `amd64` ou `arm64`. Toutes les archives incluent `kf`. Celles pour Linux contiennent aussi `keyfold-server`, le dossier `web/` compilé et `packaging/`. Le workflow publie `ghcr.io/dev-toolings/keyfold:<version>` pour Linux en retirant le `v` initial du tag.",
             },
-            { code: "go run ./apps/keyfold-server" },
             {
-              p: "Chaque valeur a son option, et `-web` sert l'interface web construite quand le dossier existe :",
+              p: "Avec Docker, utilisez `packaging/compose.yml` et le fichier `Caddyfile` du même dossier. Remplacez l'`image` du service `vault` par l'image GHCR avec son tag. Tant qu'aucune version n'a été publiée, lancez `make image` depuis un clone et gardez la référence à l'image locale du kit. Si le tag affiché diffère de `dev`, donnez à `VERSION` la valeur qui suit `keyfold:`. Gardez le même projet Compose pour la configuration et les mises à jour afin de réutiliser le volume `vault-data` monté dans `/data`.",
             },
-            { code: "go run ./apps/keyfold-server -listen 127.0.0.1:8717 -data ./data -web ./apps/web/dist" },
             {
-              p: "`make build` construit les binaires `kf` et `keyfold-server` dans `bin/`, et `make web-build` construit l'interface web dans `apps/web/dist`.",
+              p: "Avec systemd, placez `keyfold-server` dans `/usr/local/bin/keyfold-server`, le contenu de l'interface web compilée dans `/usr/local/share/keyfold/web` et `packaging/keyfold.service` dans `/etc/systemd/system/keyfold.service`. L'unité conserve le coffre dans `/var/lib/keyfold`. Placez `kf` dans le chemin des commandes des appareils qui l'utilisent. Pour compiler depuis un clone avec Go et Bun installés, lancez `make install`, `make build` et `make web-build`. Utilisez les binaires de `bin/` et l'interface web de `apps/web/dist`.",
+            },
+          ],
+        },
+        {
+          id: "acces-prive",
+          title: "Comment configurer un accès HTTPS privé ?",
+          blocks: [
+            {
+              p: "Privilégiez un accès HTTPS privé. Gardez Keyfold à l'écoute en boucle locale sur `127.0.0.1:8717` et placez le proxy HTTPS dans le même espace de noms réseau. Avec Compose, Caddy partage la boucle locale du coffre et le kit publie le port TCP 443 pour HTTPS. Réservez ce port à votre réseau privé. Définissez le nom d'hôte de Caddy avec `KEYFOLD_HOST`, qui renseigne aussi `KEYFOLD_ALLOWED_HOSTS`. Utilisez le même nom à chaque démarrage de la pile Compose.",
+            },
+            { code: "KEYFOLD_HOST=vault.example.com docker compose -f packaging/compose.yml up -d" },
+            {
+              p: "Ajoutez le certificat racine de Caddy, issu du volume `caddy-data`, aux certificats de confiance de chaque appareil client. Avec systemd, renseignez votre nom d'hôte HTTPS dans `KEYFOLD_ALLOWED_HOSTS` dans l'unité installée. Lancez Caddy sur la même machine avec le bloc de site de `packaging/Caddyfile`, votre nom d'hôte et la cible `127.0.0.1:8717`. Servez HTTPS sur le port 443 pour le réseau privé et ajoutez l'autorité interne de cette instance de Caddy aux certificats de confiance de chaque appareil.",
+            },
+            { code: "sudo systemctl enable --now keyfold.service" },
+            {
+              p: "Sur une installation sur l'hôte, vous pouvez aussi utiliser Tailscale Serve (`tailscale serve`). Donnez à `KEYFOLD_ALLOWED_HOSTS` le nom HTTPS de la machine sur votre réseau Tailscale, par exemple `coffre.exemple.ts.net`, et configurez Serve pour transmettre le trafic HTTPS privé à `http://127.0.0.1:8717`. Faites les deux vérifications ci-dessous avant de l'utiliser.",
+            },
+            {
+              p: "Le proxy doit transmettre le `Host` d'origine, dont le nom doit figurer dans `KEYFOLD_ALLOWED_HOSTS`. Il doit ajouter l'adresse IP du client qui se connecte à la fin de `X-Forwarded-For`.",
+            },
+            {
+              p: "Si un proxy sur la même machine remplace `Host` par la cible en boucle locale et n'envoie aucun en-tête de transfert, Keyfold traite les requêtes distantes comme locales. Les clients distants peuvent alors créer le coffre sans jeton d'installation, contourner les limites par client et récupérer l'identité chiffrée sans activer le TOTP.",
+            },
+            {
+              p: "La directive `reverse_proxy` de Caddy utilisée par ce kit fait les deux par défaut. Une fois Keyfold démarré, vérifiez ces deux points depuis un autre appareil via le proxy avant de créer le coffre. Vous pouvez envoyer les requêtes GET en ouvrant les deux chemins sur votre hôte HTTPS dans un navigateur.",
+            },
+            {
+              p: "1. Envoyez `GET /api/v1/alive`. Le statut HTTP 404 confirme que Keyfold traite la requête comme distante.",
+            },
+            {
+              p: "2. Envoyez `GET /api/v1/status`, car la sonde de vie est journalisée au niveau debug. Lisez le journal d'accès du serveur avec `docker compose -f packaging/compose.yml logs vault` pour Compose, ou `journalctl -u keyfold` pour systemd. Le champ `client` de la requête doit indiquer l'adresse IP de l'appareil, ce qui confirme que Keyfold utilise l'adresse transmise. `127.0.0.1` ou `::1` désigne l'adresse de boucle locale du proxy.",
+            },
+          ],
+        },
+        {
+          id: "acces-public",
+          title: "Puis-je exposer Keyfold sur Internet ?",
+          blocks: [
+            {
+              p: "Utilisez Caddy avec un nom DNS public et un certificat reconnu publiquement. Faites pointer le nom vers le proxy, autorisez le trafic entrant sur le port TCP 443 et retirez `tls internal` du bloc de site de Caddy. Gardez la même cible et le même nom d'hôte autorisé, puis faites les deux vérifications du proxy avant de créer le coffre. Si Caddy a besoin d'une validation DNS, configurez le défi ACME DNS avec un module pour votre fournisseur DNS comme indiqué dans `packaging/Caddyfile`.",
+            },
+            {
+              p: "L'interface web et l'API deviennent accessibles à toute personne sur Internet. Les routes protégées de l'API exigent toujours une session. Le déverrouillage à distance exige le TOTP : un client doit présenter un code valide ou avoir déjà une session active pour télécharger l'identité chiffrée. Une copie de cette identité permet de tenter de deviner votre mot de passe principal hors ligne.",
             },
           ],
         },
         {
           id: "coffre",
-          title: "Comment créer le coffre ?",
+          title: "Comment créer et déverrouiller le coffre ?",
           blocks: [
             {
-              list: [
-                "Créez-le dans l'interface web ou avec `kf init`. Le mot de passe principal doit faire au moins 16 caractères.",
-                "Le second facteur TOTP est optionnel. Il est proposé juste après la création du coffre, puis dans les Paramètres, où l'on change aussi le mot de passe principal.",
-                "L'application du coffre vit sous `/personal` : déverrouillage, tableau de bord, coffre, état du système et paramètres.",
-              ],
+              p: "Choisissez un mot de passe principal d'au moins 16 caractères. Créez le coffre dans l'interface web sur la machine serveur, puis scannez le QR code avec votre application d'authentification et confirmez avec un code. Vous pouvez aussi activer le second facteur plus tard dans les Paramètres sur la machine serveur. Tant que le TOTP est désactivé, Keyfold refuse de remettre l'identité chiffrée à un client distant, même si le coffre a été créé à distance.",
+            },
+            {
+              p: "Avec systemd, ouvrez directement `http://127.0.0.1:8717`. Sur un hôte sans interface graphique, vous pouvez rediriger un port local par SSH vers la boucle locale du serveur, puis ouvrir l'adresse de boucle locale redirigée dans votre navigateur. La connexion doit atteindre Keyfold avec un nom d'hôte de boucle locale et sans en-têtes HTTP de transfert.",
+            },
+            {
+              p: "Avec Docker sur Linux, après avoir vérifié le proxy, arrêtez la pile Compose avec la commande ci-dessous. Elle conserve les volumes nommés.",
+            },
+            { code: "docker compose -f packaging/compose.yml down" },
+            {
+              p: "Remplacez temporairement le bloc `ports` du service `vault` par `network_mode: host` dans `packaging/compose.yml`. Lancez uniquement le service `vault` pour qu'il utilise la boucle locale de l'hôte pendant la configuration.",
+            },
+            { code: "KEYFOLD_HOST=vault.example.com docker compose -f packaging/compose.yml up -d vault" },
+            {
+              p: "Ouvrez `http://127.0.0.1:8717` comme pour une installation sur l'hôte et activez le TOTP. Arrêtez de nouveau la pile avec la même commande, remettez le bloc `ports` d'origine à la place de `network_mode: host`, puis redémarrez toute la pile avec la commande HTTPS ci-dessus. Refaites les deux vérifications du proxy.",
+            },
+            {
+              p: "Si vous créez le coffre à distance, récupérez le jeton à usage unique `installToken` dans le journal de démarrage du serveur avec la commande de lecture des journaux ci-dessus. Un redémarrage avant la création génère un nouveau jeton. Lorsque vous saisissez le jeton dans le formulaire, l'interface web l'envoie dans `X-Install-Token`. Le coffre est créé, puis la page tente de le déverrouiller et vous indique que vous devez activer la double authentification sur la machine serveur. Rien n'est perdu. Ne créez pas le coffre une seconde fois. Ouvrez Keyfold en boucle locale directe comme indiqué ci-dessus, déverrouillez le coffre avec le même mot de passe principal et activez le TOTP dans les Paramètres. Rechargez ensuite la page distante et déverrouillez le coffre avec votre mot de passe principal et votre code TOTP. Pour `kf init` à distance, donnez le jeton d'installation à `KEYFOLD_INSTALL_TOKEN`, utilisez l'URL HTTPS et suivez la même procédure d'activation du TOTP avant de déverrouiller le coffre à distance.",
             },
           ],
         },
         {
-          id: "interface-web",
-          title: "Que m'apporte l'interface web ?",
+          id: "connexion-cli",
+          title: "Comment connecter kf depuis un autre appareil ?",
           blocks: [
             {
-              list: [
-                "Une fiche d'élément contient un identifiant, le secret, des adresses web, un secret TOTP avec son code en direct, des champs personnalisés, une note, un dossier, un favori, des pièces jointes et les 20 valeurs précédentes, chacune restaurable.",
-                "Le générateur produit des mots de passe de 24 caractères ou des phrases de passe EFF de 6 mots.",
-                "Le tableau de bord liste les éléments à renouveler, les valeurs réutilisées, les mots de passe courts, les mots de passe faibles (entropie estimée sous 60 bits) et les sites sans secret TOTP.",
-                "La page d'état du système montre ce que le serveur stocke : nombre d'éléments et de pièces jointes, tailles, espace disque libre, TOTP et sessions ouvertes.",
-                "Les pièces jointes vont jusqu'à 100 Mio chacune par défaut, une limite réglée par `keyfold-server -max-blob`.",
-              ],
+              p: "Installez `kf` sur l'appareil et vérifiez qu'il reconnaît le certificat HTTPS. Choisissez l'URL que vous avez configurée, par exemple `https://vault.example.com` ou `https://coffre.exemple.ts.net`. La CLI refuse HTTP en clair pour les adresses hors boucle locale.",
+            },
+            { code: "export KEYFOLD_SERVER=https://vault.example.com\nkf version\nkf unlock\nkf list" },
+            {
+              p: "`kf version` affiche la version locale et le commit, s'il est disponible. `kf unlock` demande votre mot de passe principal et votre code TOTP, puis lance un agent local en arrière-plan qui conserve l'identité déchiffrée. `kf list` utilise cet agent pour accéder au coffre et affiche le nom, le type, le projet et l'environnement de chaque élément. Lancez `kf lock` pour arrêter l'agent quand vous avez terminé.",
             },
           ],
         },
         {
-          id: "journaux",
-          title: "Que journalise le serveur ?",
+          id: "sauvegarde-restauration",
+          title: "Comment sauvegarder et restaurer le coffre ?",
           blocks: [
             {
-              p: "Les journaux partent sur la sortie standard, une ligne par requête, avec un `requestId` renvoyé aussi dans l'en-tête `X-Request-Id`. Ils sont en JSON par défaut ; `KEYFOLD_ENV=development` affiche à la place des lignes colorées, et `NO_COLOR=1` retire les couleurs.",
+              p: "Pour une installation sur l'hôte, lancez la sauvegarde avec sudo pour lire les données du coffre. Ces commandes créent un nouveau dossier privé dans votre répertoire personnel et attribuent à votre compte la propriété de l'archive, dont les permissions sont de 0600.",
             },
-            { p: "Seuls la méthode, le chemin, le statut et la durée sont journalisés." },
+            {
+              code: 'backup_dir=$(mktemp -d "$HOME/keyfold-backup.XXXXXXXX") &&\nsudo /usr/local/bin/keyfold-server -data /var/lib/keyfold -backup "$backup_dir/vault.tar" &&\nsudo chown "$(id -u):$(id -g)" "$backup_dir/vault.tar"',
+            },
+            {
+              p: "Pour Compose, lancez ces commandes depuis le dossier qui contient `packaging/`, avec votre compte habituel disposant d'un accès à Docker. Compose crée l'archive dans le volume accessible en écriture `/data` et la copie dans un nouveau dossier privé de votre répertoire personnel. Par défaut, la copie locale appartient au compte qui lance `docker compose cp`. La dernière commande supprime l'archive temporaire du volume une fois la copie prête.",
+            },
+            {
+              code: 'backup_dir=$(mktemp -d "$HOME/keyfold-backup.XXXXXXXX") &&\nstaged_archive="/data/$(basename "$backup_dir").tar" &&\ndocker compose -f packaging/compose.yml exec -T vault keyfold-server -data /data -backup "$staged_archive" &&\ndocker compose -f packaging/compose.yml cp "vault:$staged_archive" "$backup_dir/vault.tar" &&\nchmod 600 "$backup_dir/vault.tar" &&\ndocker compose -f packaging/compose.yml exec -T vault rm "$staged_archive"',
+            },
+            {
+              p: "Si une étape échoue après la définition de `staged_archive`, lancez cette commande de nettoyage dans le même terminal avant de relancer la sauvegarde.",
+            },
+            { code: 'docker compose -f packaging/compose.yml exec -T vault rm -f "$staged_archive"' },
+            {
+              p: "L'archive contient l'identité, les éléments et les pièces jointes chiffrés, ainsi que le destinataire public, la version du format de stockage et `totp.json` en clair si le TOTP est configuré. Une sauvegarde à chaud lit des fichiers entiers, mais si une pièce jointe est supprimée en même temps, elle peut manquer à un élément archivé. Suspendez les écritures pendant la sauvegarde qui précède une mise à jour. Copiez régulièrement les archives ailleurs que sur la machine, dans un espace de stockage à accès restreint.",
+            },
+            {
+              p: "Pour une installation sur l'hôte, installez le minuteur systemd du kit depuis le dossier qui contient `packaging/`.",
+            },
+            {
+              code: "sudo install -m 0755 packaging/keyfold-backup.sh /usr/local/bin/keyfold-backup\nsudo install -m 0644 packaging/keyfold-backup.service packaging/keyfold-backup.timer /etc/systemd/system/\nsudo systemctl daemon-reload\nsudo systemctl enable --now keyfold-backup.timer",
+            },
+            {
+              p: "Le minuteur s'exécute tous les jours, rattrape les exécutions manquées et conserve jusqu'à 14 archives nommées `keyfold-YYYYMMDDTHHMMSSZ.tar` en UTC. Sur l'hôte, elles se trouvent dans `/var/lib/private/keyfold-backups`, accessible par le lien `/var/lib/keyfold-backups`. Dès qu'une archive existe, utilisez sudo pour l'afficher dans la liste et la copier. Lorsque `read` attend une saisie, entrez le nom de l'archive voulue. La copie appartient à votre compte et ses permissions sont de 0600.",
+            },
+            {
+              code: 'sudo ls -1 /var/lib/private/keyfold-backups &&\nread -r timer_archive &&\nbackup_dir=$(mktemp -d "$HOME/keyfold-backup.XXXXXXXX") &&\nsudo install -m 600 -o "$(id -u)" -g "$(id -g)" "/var/lib/private/keyfold-backups/$timer_archive" "$backup_dir/vault.tar"',
+            },
+            {
+              p: "Pour tester une restauration sur une machine équipée des binaires et de l'interface web, utilisez le dossier privé créé à l'une des étapes ci-dessus. Si vous avez transféré l'archive sur une autre machine, donnez à `backup_dir` le chemin du dossier privé contenant `vault.tar`. Lancez la restauration avec votre compte habituel. Le dossier `new` doit être absent ou vide.",
+            },
+            { code: 'keyfold-server -data "$backup_dir/new" -restore "$backup_dir/vault.tar"' },
+            {
+              p: "Démarrez la copie restaurée sur un autre port en boucle locale. Utilisez le mot de passe principal et l'application d'authentification d'origine, vérifiez le nombre d'éléments et ouvrez une pièce jointe téléchargée. Arrêtez le serveur de test et supprimez la copie restaurée à la fin. La procédure complète du README est à l'adresse https://github.com/dev-toolings/keyfold/blob/main/README.md#restore-drill",
+            },
+          ],
+        },
+        {
+          id: "mise-a-jour",
+          title: "Comment mettre à jour ou revenir en arrière ?",
+          blocks: [
+            {
+              list: [
+                "Lisez `CHANGELOG.md` pour la version visée. Sauvegardez le coffre avant la mise à jour et gardez à disposition le tag de l'image précédente ou son archive de publication.",
+                "Avec Compose, arrêtez la pile en gardant les volumes, remplacez le tag de l'image du coffre et relancez la pile. Avec systemd, remplacez les binaires et l'interface web par les fichiers de la même version, puis lancez `sudo systemctl restart keyfold.service`.",
+                "Lancez `keyfold-server -version` sur l'hôte ou dans le conteneur `vault` pour vérifier le binaire du serveur. Lancez `kf version` sur chaque appareil mis à jour pour vérifier la CLI. Déverrouillez le coffre en HTTPS et vérifiez qu'il s'ouvre.",
+                "Pour revenir en arrière, arrêtez le serveur mis à jour et repassez à la version précédente. Le dossier de données enregistre la version du format de stockage dans `version`. Un ancien serveur refuse d'ouvrir un dossier dont le format est plus récent. Si le format a changé, restaurez l'archive d'avant la mise à jour dans un nouveau dossier ou volume, utilisez ces données avec l'ancien serveur et gardez les données plus récentes à part. Le coffre revient à son état au moment de la sauvegarde.",
+              ],
+            },
           ],
         },
         {
           id: "limites",
-          title: "Qu'est-ce qui n'est pas encore fait ?",
+          title: "Quelles limites faut-il connaître ?",
           blocks: [
             {
               list: [
-                "TLS : le serveur parle HTTP en clair et doit rester sur `127.0.0.1`.",
-                "Hébergement : il n'y a ni unité de service, ni conteneur, ni configuration de proxy inverse.",
-                "Les sauvegardes du dossier de données restent à votre charge.",
+                "Un utilisateur et un coffre. Keyfold propose une interface web et une ligne de commande. Il n'y a ni extension de navigateur ni application mobile.",
+                "Le serveur fonctionne uniquement sous Unix et est testé sous Linux. Il répond en HTTP en clair au proxy HTTPS.",
+                "Le secret TOTP est conservé en clair dans `totp.json` sur le disque et dans les sauvegardes. Protégez les deux.",
+                "Les limites de requêtes à distance s'appliquent à l'adresse IP cliente complète, y compris en IPv6. Le proxy doit conserver `Host` et ajouter l'adresse IP du client à la fin de `X-Forwarded-For`. Keyfold utilise la dernière adresse de cet en-tête quand le proxy se connecte en boucle locale.",
               ],
             },
           ],

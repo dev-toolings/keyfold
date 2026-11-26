@@ -2,13 +2,16 @@
 // unlocked) sends the user back to /personal/unlock and remembers the current page.
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router";
+import { classificationKey } from "@/lib/classification";
 import { errorMessage } from "@/lib/labels";
 import * as vault from "@/vault";
 import { type Filter, flaggedIds } from "@/vault";
 
-/** What the item form edits. History, passkeys and SSH keys are kept from the stored item. */
-export type Draft = Pick<vault.Item, "name" | "kind" | "value" | "note"> &
-  Required<Pick<vault.Item, "username" | "urls" | "totp" | "fields" | "favorite" | "folder" | "attachments">>;
+/** Fields available in the item form. */
+export type Draft = Pick<vault.Item, "name" | "kind" | "value" | "note" | "environment"> &
+  Required<
+    Pick<vault.Item, "username" | "urls" | "totp" | "fields" | "favorite" | "folder" | "project" | "attachments">
+  >;
 
 /** The draft of a stored item, or of a new one. */
 export function toDraft(item?: vault.Item): Draft {
@@ -23,6 +26,8 @@ export function toDraft(item?: vault.Item): Draft {
     fields: item?.fields ?? [],
     favorite: item?.favorite ?? false,
     folder: item?.folder ?? "",
+    project: item?.project ?? "",
+    environment: item?.environment,
     attachments: item?.attachments ?? [],
   };
 }
@@ -39,14 +44,21 @@ function compact(draft: Draft): Partial<vault.Item> {
     fields: fields.length ? fields : undefined,
     favorite: draft.favorite || undefined,
     folder: draft.folder.trim() || undefined,
+    project: draft.project.trim() || undefined,
     attachments: draft.attachments.length ? draft.attachments : undefined,
   };
 }
 
 type VaultContext = {
   entries: vault.Entry[];
+  projects: vault.ProjectEntry[];
   /** Items still stored in an older format: `kf migrate -apply` rewrites them. */
   oldFormat: number;
+  /**
+   * Ids of the items that could not be read: they are in no list, and the vault
+   * is read-only while there is one (save, remove and attach fail with an error).
+   */
+  unreadable: string[];
   loading: boolean;
   error: string;
   /** Reference date for every statistic, taken when the entries were loaded. */
@@ -54,6 +66,8 @@ type VaultContext = {
   flags: Record<Filter, Set<string>>;
   /** Saves a draft and returns the id it was stored under, or null on failure (error is set). */
   save: (id: string | null, draft: Draft) => Promise<string | null>;
+  removeProject: (name: string, id?: string) => Promise<void>;
+  createProject: (fields: Pick<vault.Project, "name" | "specialty" | "languages" | "tags">) => Promise<void>;
   remove: (id: string) => Promise<boolean>;
   /** Encrypts and uploads a file; the caller lists the ref in a draft. Null on failure. */
   attach: (file: File) => Promise<vault.BlobRef | null>;
@@ -74,6 +88,8 @@ export function VaultProvider({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const location = useLocation();
   const [entries, setEntries] = useState<vault.Entry[]>([]);
+  const [projects, setProjects] = useState<vault.ProjectEntry[]>([]);
+  const [unreadable, setUnreadable] = useState<string[]>([]);
   const [now, setNow] = useState(() => new Date());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -93,8 +109,12 @@ export function VaultProvider({ children }: { children: ReactNode }) {
   );
 
   const reload = useCallback(async () => {
-    setEntries(await vault.listItems());
+    const listing = await vault.listItems();
+    setEntries(listing.entries);
+    setProjects(listing.projects);
+    setUnreadable(listing.unreadable);
     setNow(new Date());
+    return listing;
   }, []);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: load once on mount
@@ -102,15 +122,41 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     run(reload).finally(() => setLoading(false));
   }, []);
 
+  // The name and the attachments of an item that cannot be read are unknown:
+  // a write could take its name, or delete a file it still lists. Reading stays
+  // possible; writing waits for the item to be readable again or gone. The
+  // vault is listed anew before each write: another client may have stored
+  // such an item since this page loaded, and a listing that fails proves
+  // nothing. The entries on screen are left alone, with their ETags: a write
+  // over an item changed elsewhere must still be refused as a conflict.
+  const writable = useCallback(async () => {
+    const listing = await vault.listItems();
+    setUnreadable(listing.unreadable);
+    if (listing.unreadable.length > 0) {
+      throw new Error(
+        "Coffre en lecture seule tant qu'un élément est illisible. Le détail est dans l'état du système.",
+      );
+    }
+    return listing;
+  }, []);
+
   const save = useCallback(
     (id: string | null, draft: Draft) =>
       run(async () => {
+        const { entries: fresh } = await writable();
         // A name is unique: saving under an existing name overwrites that item, like `kf set`.
         const edited = entries.find((e) => e.id === id) ?? null;
-        const target = entries.find((e) => e.item.name === draft.name) ?? edited;
+        const target = vault.selectSaveTarget(entries, fresh, id, draft.name);
+        if (
+          target &&
+          target.id !== id &&
+          classificationKey(target.item.project ?? "") !== classificationKey(draft.project)
+        ) {
+          throw new Error("Ce nom existe déjà dans une autre vue du coffre. Choisissez un autre nom.");
+        }
         const stamp = new Date().toISOString();
-        // The fields the form does not edit (username, URLs...) come from the
-        // item being edited, even when its new name overwrites another item.
+        // Keep fields outside the form from the original item, or from the
+        // overwrite target when creating an item with an existing name.
         const base = edited?.item ?? target?.item;
         const merged = {
           ...base,
@@ -141,23 +187,104 @@ export function VaultProvider({ children }: { children: ReactNode }) {
         await reload();
         return saved;
       }),
-    [entries, run, reload],
+    [entries, run, reload, writable],
+  );
+
+  const createProject = useCallback<VaultContext["createProject"]>(
+    async (fields) => {
+      try {
+        const fresh = await writable();
+        const key = classificationKey(fields.name);
+        if (fresh.projects.some(({ project }) => project.name_key === key)) {
+          setProjects(fresh.projects);
+          throw new Error("Un projet porte déjà ce nom.");
+        }
+        const now = new Date().toISOString();
+        const project: vault.Project = {
+          ...fields,
+          v: vault.PROJECT_VERSION,
+          kind: "project",
+          name_key: key,
+          created_at: now,
+          updated_at: now,
+        };
+        const id = await vault.createProject(project);
+        setProjects((current) => [...current.filter((entry) => entry.id !== id), { id, project }]);
+      } catch (error) {
+        if (error instanceof vault.LockedError) {
+          navigate("/personal/unlock", { replace: true, state: { from: location } });
+        }
+        throw error;
+      }
+    },
+    [location, navigate, writable],
+  );
+
+  const removeProject = useCallback(
+    async (name: string, id?: string) => {
+      const key = classificationKey(name);
+      let detached = 0;
+      try {
+        const fresh = await writable();
+        const target = fresh.projects.find((entry) => entry.project.name_key === key);
+        if (target && target.id !== id) {
+          await reload();
+          throw new Error("Ce projet a changé. Vérifiez son contenu avant de réessayer.");
+        }
+        try {
+          for (const entry of fresh.entries) {
+            if (classificationKey(entry.item.project ?? "") === key) {
+              await vault.saveItem(entry, { ...entry.item, project: undefined, updated_at: new Date().toISOString() });
+              detached++;
+            }
+          }
+          if (target) await vault.deleteProject(target);
+        } catch (error) {
+          if (error instanceof vault.LockedError) throw error;
+          await reload();
+          if (detached > 0) {
+            throw new Error(
+              `Éléments déplacés dans « Sans projet » : ${detached}. Réessayez pour terminer. ${errorMessage(error)}`,
+            );
+          }
+          throw error;
+        }
+        const remaining = await reload();
+        if (
+          remaining.projects.some(({ project }) => project.name_key === key) ||
+          remaining.entries.some(({ item }) => classificationKey(item.project ?? "") === key)
+        ) {
+          throw new Error("Le projet a changé pendant la suppression. Vérifiez son contenu avant de réessayer.");
+        }
+      } catch (error) {
+        if (error instanceof vault.LockedError) {
+          navigate("/personal/unlock", { replace: true, state: { from: location } });
+        }
+        throw error;
+      }
+    },
+    [location, navigate, reload, writable],
   );
 
   const remove = useCallback(
     async (id: string) =>
       (await run(async () => {
+        await writable();
         const entry = entries.find((e) => e.id === id);
         if (entry) await vault.deleteItem(entry);
         await reload();
         return true;
       })) ?? false,
-    [entries, run, reload],
+    [entries, run, reload, writable],
   );
 
   const attach = useCallback(
-    (file: File) => run(async () => vault.uploadAttachment(file.name, new Uint8Array(await file.arrayBuffer()))),
-    [run],
+    (file: File) =>
+      run(async () => {
+        await writable();
+        return vault.uploadAttachment(file.name, new Uint8Array(await file.arrayBuffer()));
+      }),
+    [run, writable],
   );
 
   const download = useCallback(
@@ -183,8 +310,40 @@ export function VaultProvider({ children }: { children: ReactNode }) {
   const oldFormat = useMemo(() => entries.filter((e) => e.oldFormat).length, [entries]);
 
   const value = useMemo(
-    () => ({ entries, oldFormat, loading, error, now, flags, save, remove, attach, download, lock }),
-    [entries, oldFormat, loading, error, now, flags, save, remove, attach, download, lock],
+    () => ({
+      entries,
+      projects,
+      oldFormat,
+      unreadable,
+      loading,
+      error,
+      now,
+      flags,
+      save,
+      createProject,
+      removeProject,
+      remove,
+      attach,
+      download,
+      lock,
+    }),
+    [
+      entries,
+      projects,
+      oldFormat,
+      unreadable,
+      loading,
+      error,
+      now,
+      flags,
+      save,
+      createProject,
+      removeProject,
+      remove,
+      attach,
+      download,
+      lock,
+    ],
   );
   return <Context.Provider value={value}>{children}</Context.Provider>;
 }

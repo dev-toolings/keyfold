@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"cmp"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -14,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"slices"
@@ -26,13 +28,16 @@ import (
 	"golang.org/x/term"
 
 	"keyfold/internal/agent"
+	"keyfold/internal/hosts"
 	"keyfold/internal/store"
 	"keyfold/internal/vault"
+	"keyfold/internal/version"
 )
 
 const usage = `usage: kf [-server URL] <command> [args]
 
 commands:
+  version                    print the version
   init                       create the vault (asks the master password twice)
   unlock [-ttl 1h]           unlock and start the background agent
   lock                       stop the agent
@@ -56,14 +61,18 @@ commands:
   import -format keyfold|bitwarden-json|1password-1pux|csv <file>
                              add the items of an export; one already present
                              is skipped, a taken name gets a " (2)" suffix
-  list                       print names and kinds
+  list                       print name, kind, project and environment as tab-separated columns
   rm <name>                  delete an item
   migrate [-apply]           rewrite items in the current format (dry run
                              without -apply)
-  mcp                        serve the MCP tools on stdin/stdout, for AI agents
-                             (list names, generate a secret; never a value)
+  mcp [-code-mode]           serve the MCP tools on stdin/stdout, for AI agents
+                             (list names, generate a secret, import a declared
+                             env file; never a value). -code-mode serves only
+                             search and execute (JavaScript calling the same
+                             operations)
 
 The server URL defaults to $KEYFOLD_SERVER, then http://127.0.0.1:8717.
+For remote init, set $KEYFOLD_INSTALL_TOKEN to the install token from the server log.
 `
 
 func main() {
@@ -87,9 +96,13 @@ func run(args []string, stdin, stdout *os.File, stderr io.Writer) int {
 	cmd, rest := fs.Arg(0), fs.Args()[1:]
 
 	var err error
+	code := 0
 	switch cmd {
+	case "version":
+		fmt.Fprintln(stdout, "kf", version.Display())
+		return 0
 	case "init":
-		err = cmdInit(c, stdin, stderr)
+		err = cmdInit(c, func(prompt string) (string, error) { return readPassword(stdin, stderr, prompt) }, stderr)
 	case "unlock":
 		err = cmdUnlock(c, rest, stdin, stderr)
 	case "agent":
@@ -113,10 +126,7 @@ func run(args []string, stdin, stdout *os.File, stderr io.Writer) int {
 		}
 		err = cmdRead(c, rest, stdout)
 	case "run":
-		var code int
-		if code, err = cmdRun(c, rest, stdin, stdout, stderr); err == nil {
-			return code
-		}
+		code, err = cmdRun(c, rest, stdin, stdout, stderr)
 	case "inject":
 		err = cmdInject(c, rest, stdout, stderr)
 	case "generate":
@@ -136,23 +146,48 @@ func run(args []string, stdin, stdout *os.File, stderr io.Writer) int {
 	case "migrate":
 		err = cmdMigrate(c, rest, stdout, stderr)
 	case "mcp":
-		err = cmdMCP(c)
+		err = cmdMCP(c, rest)
 	default:
 		fs.Usage()
 		return 2
+	}
+	if len(c.unreadable) > 0 {
+		fmt.Fprintf(stderr, "kf: warning: %d item(s) cannot be read and were skipped: %s\n", len(c.unreadable), strings.Join(c.unreadable, ", "))
 	}
 	if err != nil {
 		fmt.Fprintln(stderr, "kf:", err)
 		return 1
 	}
-	return 0
+	// A command whose result stands for the whole vault did its work, on a
+	// part of it only.
+	if len(c.unreadable) > 0 && (cmd == "list" || cmd == "migrate") {
+		return exitPartial
+	}
+	return code
 }
+
+// httpClient bounds every call, so a silent server fails the command instead
+// of hanging it. It never follows a redirect: the API sends none, and one to
+// another scheme or host would carry the session token there.
+var httpClient = &http.Client{
+	Timeout:       30 * time.Second,
+	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+}
+
+// exitPartial is the exit code of list and migrate when they worked on the
+// readable items only.
+const exitPartial = 3
 
 // client talks to the server API.
 type client struct {
 	base  string
+	ctx   context.Context // bounds the HTTP calls; nil: the client timeout only
 	token string
 	totp  string // sent once with the identity download when the server asks for it
+	// unreadable holds the ids of the items open could not decrypt: a damaged
+	// file, or a format this kf does not know. They are skipped, not fatal.
+	unreadable []string
+	projects   []vault.Item
 }
 
 func (c *client) do(method, path string, in, out any) error {
@@ -169,7 +204,13 @@ func (c *client) doWith(method, path string, hdr http.Header, in, out any) error
 		}
 		body = bytes.NewReader(b)
 	}
-	req, err := http.NewRequest(method, c.base+path, body)
+	// Tokens and the TOTP code travel in headers: never in clear
+	// over a network. Checked here, so commands that stay local (lock, the
+	// agent) run whatever the server URL is.
+	if u, err := url.Parse(c.base); err != nil || (u.Scheme != "https" && (u.Scheme != "http" || !hosts.Loopback(hosts.Name(u.Host)))) {
+		return fmt.Errorf("server %s: use an https:// URL, plain http is only accepted for a loopback address", c.base)
+	}
+	req, err := http.NewRequestWithContext(cmp.Or(c.ctx, context.Background()), method, c.base+path, body)
 	if err != nil {
 		return err
 	}
@@ -185,7 +226,7 @@ func (c *client) doWith(method, path string, hdr http.Header, in, out any) error
 	if c.totp != "" {
 		req.Header.Set("X-TOTP-Code", c.totp)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("server unreachable at %s", c.base)
 	}
@@ -219,14 +260,35 @@ func (c *client) login(id age.Identity) error {
 	var s struct {
 		Token string `json:"token"`
 	}
-	if err := c.do("POST", "/api/v1/session", map[string]any{"id": ch.ID, "answer": answer}, &s); err != nil {
+	// Under a deadline (MCP), the session request ignores it: cut midway, it
+	// would leave a session whose token nobody holds. Its own 10 s bound keeps
+	// the deadline close. The CLI has no deadline and keeps the HTTP timeout.
+	saved := c.ctx
+	if saved != nil {
+		var cancel context.CancelFunc
+		c.ctx, cancel = context.WithTimeout(context.WithoutCancel(saved), 10*time.Second)
+		defer cancel()
+	}
+	err = c.do("POST", "/api/v1/session", map[string]any{"id": ch.ID, "answer": answer}, &s)
+	c.ctx = saved
+	if err != nil {
 		return err
 	}
 	c.token = s.Token
 	return nil
 }
 
-func (c *client) logout() { c.do("POST", "/api/v1/lock", nil, nil) }
+// logout closes the session even when c.ctx is done, so a script that ran out
+// of time leaves no open session behind; under a deadline it waits 5 s at
+// most. The CLI has no deadline and keeps the HTTP timeout.
+func (c *client) logout() {
+	if c.ctx != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		c.ctx = ctx
+	}
+	c.do("POST", "/api/v1/lock", nil, nil)
+}
 
 type entry struct {
 	id   string
@@ -255,7 +317,9 @@ func newEntry() entry {
 	return entry{id: hex.EncodeToString(b)}
 }
 
-// open logs in with the agent identity and decrypts every item.
+// open logs in with the agent identity and decrypts every item it can. One
+// item that cannot be read must not put every other secret out of reach: its
+// id goes to c.unreadable.
 func (c *client) open() (*age.X25519Identity, []entry, error) {
 	s, err := agent.Identity()
 	if err != nil {
@@ -274,15 +338,32 @@ func (c *client) open() (*age.X25519Identity, []entry, error) {
 		return nil, nil, err
 	}
 	entries := make([]entry, 0, len(raw))
+	c.projects = nil
 	for _, r := range raw {
 		it, err := vault.DecryptItem(r.Ciphertext, id)
 		if err != nil {
-			c.logout()
-			return nil, nil, fmt.Errorf("item %s cannot be decrypted", r.ID)
+			c.unreadable = append(c.unreadable, r.ID)
+			continue
+		}
+		if it.Kind == vault.ProjectKind {
+			c.projects = append(c.projects, it)
+			continue
 		}
 		entries = append(entries, entry{id: r.ID, etag: r.ETag, item: it})
 	}
 	return id, entries, nil
+}
+
+// whole returns an error when open skipped items. Their names are unknown, so
+// a command that takes a name for free could make a second item of that name,
+// and one that writes the vault to a file would leave them out.
+func (c *client) whole() error {
+	if len(c.unreadable) == 0 {
+		return nil
+	}
+	// The ids are in the error itself: an MCP caller sees nothing else.
+	return fmt.Errorf("this needs the whole vault, and %d item(s) cannot be read (%s): upgrade kf if a newer Keyfold wrote them, else restore them from a backup; deleting their files in items/ on the server removes them for good",
+		len(c.unreadable), strings.Join(c.unreadable, ", "))
 }
 
 func find(entries []entry, name string) (entry, bool) {
@@ -325,7 +406,7 @@ func readPassword(stdin *os.File, stderr io.Writer, prompt string) (string, erro
 	return string(b), nil
 }
 
-func cmdInit(c *client, stdin *os.File, stderr io.Writer) error {
+func cmdInit(c *client, password func(string) (string, error), stderr io.Writer) error {
 	var st struct {
 		Initialized bool `json:"initialized"`
 	}
@@ -335,14 +416,14 @@ func cmdInit(c *client, stdin *os.File, stderr io.Writer) error {
 	if st.Initialized {
 		return errors.New("vault already initialized")
 	}
-	pw, err := readPassword(stdin, stderr, "New master password: ")
+	pw, err := password("New master password: ")
 	if err != nil {
 		return err
 	}
 	if err := vault.CheckMasterPassword(pw); err != nil {
 		return err
 	}
-	again, err := readPassword(stdin, stderr, "Repeat master password: ")
+	again, err := password("Repeat master password: ")
 	if err != nil {
 		return err
 	}
@@ -357,7 +438,11 @@ func cmdInit(c *client, stdin *os.File, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if err := c.do("POST", "/api/v1/init", map[string]any{"identity": wrapped, "recipient": id.Recipient().String()}, nil); err != nil {
+	hdr := http.Header{}
+	if token := os.Getenv("KEYFOLD_INSTALL_TOKEN"); token != "" {
+		hdr.Set("X-Install-Token", token)
+	}
+	if err := c.doWith("POST", "/api/v1/init", hdr, map[string]any{"identity": wrapped, "recipient": id.Recipient().String()}, nil); err != nil {
 		return err
 	}
 	fmt.Fprintln(stderr, "vault initialized")
@@ -525,6 +610,9 @@ func cmdSet(c *client, args []string, stdin *os.File, stderr io.Writer) error {
 		e.item, _ = vault.Upgrade(e.item)
 		e.item.CreatedAt = cmp.Or(e.item.CreatedAt, e.item.UpdatedAt)
 	} else {
+		if err := c.whole(); err != nil { // the name may be the one of an item that cannot be read
+			return err
+		}
 		e = newEntry()
 		e.item = vault.Item{V: vault.ItemVersion, Name: name, Kind: "login", CreatedAt: now}
 	}
@@ -593,7 +681,7 @@ func cmdList(c *client, stdout io.Writer) error {
 	sort.Slice(entries, func(i, j int) bool { return entries[i].item.Name < entries[j].item.Name })
 	for _, e := range entries {
 		it, _ := vault.Upgrade(e.item) // same kinds as the web UI and `set -kind`
-		fmt.Fprintf(stdout, "%s\t%s\n", it.Name, it.Kind)
+		fmt.Fprintf(stdout, "%s\t%s\t%s\t%s\n", it.Name, it.Kind, it.Project, it.Environment)
 	}
 	return nil
 }

@@ -24,6 +24,7 @@ var Formats = []string{"keyfold", "bitwarden-json", "1password-1pux", "csv"}
 // kindField carries a kf kind through a Bitwarden login, so a token or an SSH
 // passphrase comes back as itself.
 const kindField = "keyfold:kind"
+const environmentField = "keyfold:environment"
 
 // Import parses an export file. Skipped lists the entries it cannot hold
 // (payment cards, unknown types), by name.
@@ -209,6 +210,10 @@ func fromBitwarden(data []byte, stamp string) ([]vault.Item, []string, error) {
 				it.Kind = f.Value
 				continue
 			}
+			if f.Name == environmentField && f.Value != "" && vault.CheckEnvironment(f.Value) == nil {
+				it.Environment = f.Value
+				continue
+			}
 			it.Fields = append(it.Fields, vault.Field{Name: f.Name, Value: f.Value, Hidden: f.Type == 1})
 		}
 		for _, h := range b.PasswordHistory {
@@ -260,6 +265,9 @@ func toBitwarden(items []vault.Item) ([]byte, error) {
 		}
 		if note != "" {
 			b.Notes = &note
+		}
+		if it.Environment != "" {
+			b.Fields = append(b.Fields, bwField{Name: environmentField, Value: it.Environment})
 		}
 		for _, f := range it.Fields {
 			t := 0

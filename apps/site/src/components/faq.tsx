@@ -8,11 +8,18 @@ import type { Content, Lang } from "@/content/landing";
  */
 export function Faq({ title, items }: { title: string; items: Content["faq"]; lang: Lang }) {
   return (
-    <section id="faq" className="lp-container scroll-mt-8 pt-20 min-[810px]:pt-[120px]">
-      <h2 className="lp-h2 max-w-[760px]" data-reveal>
+    <section
+      id="faq"
+      className="lp-container grid scroll-mt-8 gap-12 pt-20 min-[810px]:pt-[120px] min-[1024px]:grid-cols-12 min-[1024px]:gap-12"
+    >
+      {/* From 1024 px the title holds the left third and the questions run to the right edge of the grid. */}
+      <h2
+        className="lp-h2 min-[1024px]:sticky min-[1024px]:top-8 min-[1024px]:col-span-4 min-[1024px]:self-start"
+        data-reveal
+      >
         {title}
       </h2>
-      <div className="mt-12 max-w-[860px]">
+      <div className="min-[1024px]:col-span-8">
         {items.map(({ question, answer }, i) => (
           <details key={question} data-reveal style={{ "--i": i } as CSSProperties} className="lp-faq">
             <summary>

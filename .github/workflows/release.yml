@@ -1,0 +1,223 @@
+# Run release-tag, check, image-build, release, then image. A failed workflow can be rerun in full.
+# Pushing architecture build tags and running docker buildx imagetools create are safe to repeat.
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ github.ref_name }}
+  REPOSITORY: ${{ github.repository }}
+
+jobs:
+  release-tag:
+    runs-on: ubuntu-latest
+    permissions:
+      # GitHub only exposes draft releases with push access.
+      contents: write
+    steps:
+      - name: Validate release tag
+        shell: bash
+        run: |
+          tag_pattern='^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+          if [[ ! "$RELEASE_TAG" =~ $tag_pattern ]]; then
+            printf 'Invalid release tag: %s (expected vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-SUFFIX)\n' "$RELEASE_TAG" >&2
+            exit 1
+          fi
+      # Drafts are managed manually. Stop before building and allow replays of published releases.
+      - &check_release_state
+        name: Check release state
+        id: release_state
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # An empty match means missing only after every page was fetched successfully.
+          if ! is_draft=$(gh api --paginate "repos/$REPOSITORY/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"$RELEASE_TAG\") | .draft"); then
+            printf 'Could not look up release %s.\n' "$RELEASE_TAG" >&2
+            exit 1
+          fi
+          case "$is_draft" in
+            true)
+              printf 'Release %s is a draft. Resolve the draft manually before rerunning this workflow.\n' "$RELEASE_TAG" >&2
+              exit 1
+              ;;
+            false) exists=true ;;
+            '') exists=false ;;
+            *)
+              printf 'Unexpected release state for %s.\n' "$RELEASE_TAG" >&2
+              exit 1
+              ;;
+          esac
+          printf 'exists=%s\n' "$exists" >> "$GITHUB_OUTPUT"
+
+  check:
+    needs: release-tag
+    runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.commit.outputs.short_sha }}
+    steps:
+      # Actions are pinned to a commit: a moved tag cannot change what runs here.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate changelog section
+        shell: bash
+        run: bash .github/release-notes.sh "$RELEASE_TAG" > /dev/null
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - name: Install dependencies
+        run: go mod download && bun install --frozen-lockfile
+      - name: Format, vet, tests, typecheck, lint
+        run: make check
+      - name: Known vulnerabilities in Go code
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+      - name: Known vulnerabilities in web packages
+        run: bun audit
+      - name: Read short commit SHA
+        id: commit
+        run: |
+          short_sha=$(git rev-parse --short=7 HEAD)
+          printf 'short_sha=%s\n' "$short_sha" >> "$GITHUB_OUTPUT"
+
+  # The archives stay on this runner through upload.
+  release:
+    name: Binaries and release
+    needs: [check, image-build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Extract release notes
+        shell: bash
+        run: bash .github/release-notes.sh "$RELEASE_TAG" > "$RUNNER_TEMP/keyfold-release-notes.md"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - name: Build web UI
+        run: |
+          bun install --frozen-lockfile
+          make web-build
+      - name: Build and archive binaries
+        shell: bash
+        env:
+          CGO_ENABLED: '0'
+          COMMIT: ${{ needs.check.outputs.commit }}
+        run: |
+          output="$RUNNER_TEMP/keyfold-release"
+          mkdir -p "$output"
+          ldflags="-X keyfold/internal/version.Version=$RELEASE_TAG -X keyfold/internal/version.Commit=$COMMIT"
+          for os in linux darwin; do
+            for arch in amd64 arm64; do
+              name="keyfold_${RELEASE_TAG}_${os}_${arch}"
+              staging="$RUNNER_TEMP/$name"
+              mkdir -p "$staging"
+              GOOS="$os" GOARCH="$arch" go build -ldflags "$ldflags" -o "$staging/kf" ./apps/kf
+              cp LICENSE README.md CHANGELOG.md "$staging/"
+              # The server store is Unix-only, and we only test the server on Linux.
+              if [[ "$os" == linux ]]; then
+                GOOS="$os" GOARCH="$arch" go build -ldflags "$ldflags" -o "$staging/keyfold-server" ./apps/keyfold-server
+                cp -R apps/web/dist "$staging/web"
+                if [[ -d packaging ]]; then
+                  cp -R packaging "$staging/"
+                fi
+              fi
+              tar -czf "$output/$name.tar.gz" -C "$staging" .
+            done
+          done
+          cd "$output" || exit 1
+          sha256sum -- ./*.tar.gz > checksums.txt
+      # Check again for a draft created while the builds ran.
+      - *check_release_state
+      - name: Publish GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_EXISTS: ${{ steps.release_state.outputs.exists }}
+        run: |
+          cd "$RUNNER_TEMP/keyfold-release" || exit 1
+          notes="$RUNNER_TEMP/keyfold-release-notes.md"
+          if [[ "$RELEASE_EXISTS" == true ]]; then
+            gh release upload "$RELEASE_TAG" ./*.tar.gz checksums.txt --repo "$REPOSITORY" --clobber
+            gh release edit "$RELEASE_TAG" --repo "$REPOSITORY" --notes-file "$notes"
+          else
+            flags=()
+            if [[ "$RELEASE_TAG" == *-* ]]; then
+              flags+=(--prerelease)
+            fi
+            gh release create "$RELEASE_TAG" ./*.tar.gz checksums.txt \
+              --repo "$REPOSITORY" --verify-tag --notes-file "$notes" "${flags[@]}"
+          fi
+
+  image-build:
+    needs: check
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Log in to GHCR
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GITHUB_TOKEN" | docker login ghcr.io --username x-access-token --password-stdin
+      - name: Build and push native image
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+          COMMIT: ${{ needs.check.outputs.commit }}
+        run: |
+          image="ghcr.io/${REPOSITORY%%/*}/keyfold"
+          arch_tag="${image,,}:build-$GITHUB_RUN_ID-$ARCH"
+          docker build --platform "linux/$ARCH" --file packaging/Dockerfile \
+            --build-arg "VERSION=$RELEASE_TAG" --build-arg "COMMIT=$COMMIT" \
+            --tag "$arch_tag" .
+          docker push "$arch_tag"
+
+  image:
+    needs: release
+    runs-on: ubuntu-24.04
+    permissions:
+      packages: write
+    steps:
+      - name: Log in to GHCR
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GITHUB_TOKEN" | docker login ghcr.io --username x-access-token --password-stdin
+      - name: Publish multi-architecture image
+        shell: bash
+        run: |
+          image="ghcr.io/${REPOSITORY%%/*}/keyfold"
+          image="${image,,}"
+          version="${RELEASE_TAG#v}"
+          tags=(--tag "$image:$version")
+          if [[ "$RELEASE_TAG" != *-* ]]; then
+            tags+=(--tag "$image:latest")
+          fi
+          docker buildx imagetools create "${tags[@]}" \
+            "$image:build-$GITHUB_RUN_ID-amd64" "$image:build-$GITHUB_RUN_ID-arm64"

@@ -3,20 +3,26 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
 	"filippo.io/age"
 	"github.com/pquerna/otp/totp"
 
+	"keyfold/internal/logger"
 	"keyfold/internal/store"
 	"keyfold/internal/vault"
+	"keyfold/internal/version"
 )
 
 func init() { vault.ScryptWorkFactor = 10 }
@@ -70,6 +76,224 @@ func call(t *testing.T, ts *httptest.Server, method, path, token string, in, out
 		json.NewDecoder(resp.Body).Decode(out)
 	}
 	return resp.StatusCode
+}
+
+func newInitTestStore(t *testing.T) *store.Store {
+	t.Helper()
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
+func initTestRequest(t *testing.T, address, token string) (*http.Request, *age.X25519Identity) {
+	t.Helper()
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapped, err := vault.WrapIdentity(id, "fake-install-master-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(map[string]any{"identity": wrapped, "recipient": id.Recipient().String()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := clientRequest(http.MethodPost, "/api/v1/init", address)
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		r.Header.Set("X-Install-Token", token)
+	}
+	return r, id
+}
+
+func TestNonLocalInitRequiresInstallToken(t *testing.T) {
+	st := newInitTestStore(t)
+	h := newServer(st).handler()
+	r, _ := initTestRequest(t, "192.0.2.1", "")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("init without a token: got %d, want 403", w.Code)
+	}
+	var reply map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &reply); err != nil {
+		t.Fatal(err)
+	}
+	if len(reply) != 1 {
+		t.Error("the response must contain only the error field")
+	}
+	if !strings.Contains(reply["error"], "X-Install-Token") || !strings.Contains(reply["error"], "server log") {
+		t.Error("the error must point to the header and the server log")
+	}
+	if st.Initialized() {
+		t.Fatal("init without a token created the vault")
+	}
+}
+
+func TestInstallTokenCreatesVaultOnce(t *testing.T) {
+	st := newInitTestStore(t)
+	s := newServer(st)
+	h := s.handler()
+	token := s.installToken
+	r, owner := initTestRequest(t, "192.0.2.1", token)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("init with the token: got %d, want 201", w.Code)
+	}
+	if s.installToken != "" {
+		t.Fatal("the install token was retained after creation")
+	}
+
+	r, _ = initTestRequest(t, "192.0.2.2", token)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("init with a used token: got %d, want 409", w.Code)
+	}
+	wrapped, recipient, err := st.Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := vault.UnwrapIdentity(wrapped, "fake-install-master-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id.String() != owner.String() || recipient != owner.Recipient().String() {
+		t.Fatal("the vault identity or recipient does not belong to the first caller")
+	}
+}
+
+func TestInitWithDirectorySyncError(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newServer(st)
+	h := s.handler()
+	token := s.installToken
+	syncErr := &os.PathError{Op: "sync", Path: dir, Err: fs.ErrPermission}
+
+	s.initStore = func([]byte, string) error { return syncErr }
+	r, _ := initTestRequest(t, "192.0.2.1", token)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusInternalServerError || st.Initialized() || s.installToken != token {
+		t.Fatalf("init error before identity write: got %d, want 500 with the vault uninitialized and the token retained", w.Code)
+	}
+
+	s.initStore = func(identity []byte, recipient string) error {
+		if err := st.Init(identity, recipient); err != nil {
+			return err
+		}
+		return syncErr
+	}
+	var log bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(logger.New("production", &log))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	r, owner := initTestRequest(t, "192.0.2.1", token)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusCreated || !st.Initialized() || s.installToken != "" {
+		t.Fatalf("init error after identity write: got %d, want 201 with the vault initialized and the token consumed", w.Code)
+	}
+	if !strings.Contains(log.String(), `"msg":"internal error"`) || !strings.Contains(log.String(), syncErr.Error()) {
+		t.Fatal("the directory sync failure was not logged as an internal error")
+	}
+	wrapped, recipient, err := st.Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := vault.UnwrapIdentity(wrapped, "fake-install-master-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id.String() != owner.String() || recipient != owner.Recipient().String() {
+		t.Fatal("the vault identity or recipient does not belong to the successful caller")
+	}
+}
+
+func TestWrongInstallTokenDoesNotConsumeIt(t *testing.T) {
+	s := newServer(newInitTestStore(t))
+	h := s.handler()
+	token := s.installToken
+	wrong := strings.Repeat("x", len(token))
+	r, _ := initTestRequest(t, "192.0.2.1", wrong)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("init with a wrong token: got %d, want 403", w.Code)
+	}
+	if strings.Contains(w.Body.String(), token) || strings.Contains(w.Body.String(), wrong) {
+		t.Fatal("the error includes an install token")
+	}
+
+	r, _ = initTestRequest(t, "192.0.2.1", token)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("init with the right token after a wrong one: got %d, want 201", w.Code)
+	}
+}
+
+func TestLocalInitNeedsNoInstallToken(t *testing.T) {
+	s := newServer(newInitTestStore(t))
+	r, _ := initTestRequest(t, "", "")
+	w := httptest.NewRecorder()
+	s.handler().ServeHTTP(w, r)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("local init without a token: got %d, want 201", w.Code)
+	}
+	if s.installToken != "" {
+		t.Fatal("the install token was retained after local creation")
+	}
+}
+
+func TestInstallTokenOnlyLoggedAtStartup(t *testing.T) {
+	for _, face := range []struct{ env, pattern string }{
+		{"production", `"installToken":"([0-9a-f]{32,})"`},
+		{"development", `installToken=([0-9a-f]{32,})`},
+	} {
+		t.Run(face.env, func(t *testing.T) {
+			var log bytes.Buffer
+			previous := slog.Default()
+			slog.SetDefault(logger.New(face.env, &log))
+			t.Cleanup(func() { slog.SetDefault(previous) })
+
+			st := newInitTestStore(t)
+			h := New(st, Options{})
+			startup := log.String()
+			match := regexp.MustCompile(face.pattern).FindStringSubmatch(startup)
+			if len(match) != 2 || strings.Count(startup, "\n") != 1 || !strings.Contains(startup, "create the vault") {
+				t.Fatal("startup must log one readable install token and its purpose")
+			}
+			token := match[1]
+			log.Reset()
+
+			r, _ := initTestRequest(t, "192.0.2.1", token)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if w.Code != http.StatusCreated {
+				t.Fatalf("init with the logged token: got %d, want 201", w.Code)
+			}
+			if !strings.Contains(log.String(), "/api/v1/init") || strings.Contains(log.String(), token) {
+				t.Fatal("init must have an access line without the install token")
+			}
+			log.Reset()
+
+			New(st, Options{})
+			if log.Len() != 0 {
+				t.Fatal("startup of an existing vault logged an install message")
+			}
+		})
+	}
 }
 
 type challengeResp struct {
@@ -209,6 +433,89 @@ func enableTOTP(t *testing.T, ts *httptest.Server, token string, at time.Time) s
 	return setup.Secret
 }
 
+func TestNonLocalIdentityRequiresTOTPEnabled(t *testing.T) {
+	ts, s, id, _ := setupServer(t)
+	token := login(t, ts, id)
+	h := s.handler()
+	for _, tc := range []struct{ name, token string }{
+		{"without a session", ""},
+		{"with a live session", token},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := clientRequest(http.MethodGet, "/api/v1/identity", "192.0.2.1")
+			if tc.token != "" {
+				r.Header.Set("Authorization", "Bearer "+tc.token)
+			}
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("identity with TOTP disabled: got %d, want 403", w.Code)
+			}
+			var reply map[string]string
+			if err := json.Unmarshal(w.Body.Bytes(), &reply); err != nil {
+				t.Fatal(err)
+			}
+			if len(reply) != 1 || reply["error"] != "Enable the second factor on the server machine first" {
+				t.Fatal("the response must contain only the error directing the owner to enable the second factor on the server machine")
+			}
+		})
+	}
+}
+
+func TestLocalIdentityWithoutTOTP(t *testing.T) {
+	ts, _, _ := setup(t)
+	if code := getIdentity(t, ts, "", "", nil); code != http.StatusOK {
+		t.Fatalf("local identity with TOTP disabled: got %d, want 200", code)
+	}
+}
+
+func TestNonLocalIdentityWithValidTOTP(t *testing.T) {
+	ts, s, id, _ := setupServer(t)
+	clock := time.Unix(1_800_000_000, 0)
+	s.now = func() time.Time { return clock }
+	secret := enableTOTP(t, ts, login(t, ts, id), clock)
+	clock = clock.Add(totpPeriod * time.Second)
+	code, err := totp.GenerateCode(secret, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := clientRequest(http.MethodGet, "/api/v1/identity", "192.0.2.1")
+	r.Header.Set(totpHeader, code)
+	w := httptest.NewRecorder()
+	s.handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("non-local identity with a valid code: got %d, want 200", w.Code)
+	}
+}
+
+func TestSessionMaximumLifetime(t *testing.T) {
+	ts, s, id, _ := setupServer(t)
+	started := time.Unix(1_800_000_000, 0)
+	clock := started
+	s.now = func() time.Time { return clock }
+	old := login(t, ts, id)
+	for elapsed := 10 * time.Minute; elapsed < 12*time.Hour; elapsed += 10 * time.Minute {
+		clock = started.Add(elapsed)
+		if code := call(t, ts, http.MethodGet, "/api/v1/items", old, nil, nil); code != http.StatusOK {
+			t.Fatalf("active session after %s: got %d, want 200", elapsed, code)
+		}
+	}
+	young := login(t, ts, id)
+	clock = started.Add(12*time.Hour + time.Second)
+	if code := call(t, ts, http.MethodGet, "/api/v1/items", old, nil, nil); code != http.StatusUnauthorized {
+		t.Fatalf("active session past 12 hours: got %d, want 401", code)
+	}
+	s.mu.Lock()
+	_, retained := s.sessions[old]
+	s.mu.Unlock()
+	if retained {
+		t.Fatal("expired session was retained")
+	}
+	if code := call(t, ts, http.MethodGet, "/api/v1/items", young, nil, nil); code != http.StatusOK {
+		t.Fatalf("younger session: got %d, want 200", code)
+	}
+}
+
 func TestTOTPGatesIdentity(t *testing.T) {
 	ts, s, id, _ := setupServer(t)
 	clock := time.Unix(1_800_000_000, 0)
@@ -243,22 +550,290 @@ func TestTOTPGatesIdentity(t *testing.T) {
 }
 
 func TestTOTPLockout(t *testing.T) {
-	ts, s, id, _ := setupServer(t)
+	const clientB = "192.0.2.2"
+	for _, c := range []struct{ name, clientA string }{
+		{"proxied", "192.0.2.1"},
+		{"direct loopback", ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ts, s, id, _ := setupServer(t)
+			clock := time.Unix(1_800_000_000, 0)
+			s.now = func() time.Time { return clock }
+			secret := enableTOTP(t, ts, login(t, ts, id), clock)
+			clock = clock.Add(totpPeriod * time.Second)
+			handler := s.handler()
+			get := func(address, code string) int {
+				r := clientRequest(http.MethodGet, "/api/v1/identity", address)
+				r.Header.Set(totpHeader, code)
+				w := httptest.NewRecorder()
+				handler.ServeHTTP(w, r)
+				return w.Code
+			}
+			for i := range totpMaxFailures {
+				if code := get(c.clientA, "wrong"); code != http.StatusForbidden {
+					t.Fatalf("client A wrong code %d: got %d, want 403", i+1, code)
+				}
+			}
+			good, _ := totp.GenerateCode(secret, clock)
+			if code := get(clientB, good); code != http.StatusOK {
+				t.Fatalf("client B: got %d, want 200", code)
+			}
+			if code := get(c.clientA, good); code != http.StatusTooManyRequests {
+				t.Fatalf("client A: got %d, want 429", code)
+			}
+			if code := get("192.0.2.3", good); code != http.StatusForbidden {
+				t.Fatalf("client C replay: got %d, want 403", code)
+			}
+			clock = clock.Add(totpLockout)
+			good, _ = totp.GenerateCode(secret, clock)
+			if code := get(c.clientA, good); code != http.StatusOK {
+				t.Fatalf("client A after the lockout: got %d, want 200", code)
+			}
+		})
+	}
+}
+
+func clientRequest(method, path, address string) *http.Request {
+	r := httptest.NewRequest(method, "http://localhost"+path, nil)
+	r.RemoteAddr = "127.0.0.1:1234"
+	if address != "" {
+		r.Header.Set("X-Forwarded-For", address)
+	}
+	return r
+}
+
+const clientLimitTestSecret = "JBSWY3DPEHPK3PXP"
+
+func newClientLimitTestServer(t *testing.T) *server {
+	t.Helper()
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Init([]byte(ageHeader+"test identity"), "test recipient"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetTOTP(store.TOTP{Secret: clientLimitTestSecret, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	return newServer(st)
+}
+
+func TestClientLockoutSurvivesTablePressure(t *testing.T) {
+	s := newClientLimitTestServer(t)
 	clock := time.Unix(1_800_000_000, 0)
 	s.now = func() time.Time { return clock }
-	secret := enableTOTP(t, ts, login(t, ts, id), clock)
-	clock = clock.Add(30 * time.Second)
-	for range totpMaxFailures {
-		getIdentity(t, ts, "", "000000", nil)
+	status := s.limitCalls(s.status)
+	for i := 1; i <= maxClients; i++ {
+		w := httptest.NewRecorder()
+		status(w, clientRequest(http.MethodGet, "/api/v1/status", fmt.Sprintf("2001:db8::%x", i)))
+		if w.Code != http.StatusOK {
+			t.Fatalf("fill client %d: got %d, want 200", i, w.Code)
+		}
 	}
-	good, _ := totp.GenerateCode(secret, clock)
-	if code := getIdentity(t, ts, "", good, nil); code != http.StatusTooManyRequests {
-		t.Fatalf("after %d wrong codes: got %d, want 429", totpMaxFailures, code)
+	r := clientRequest(http.MethodGet, "/api/v1/identity", "2001:db8::1")
+	r.Header.Set(totpHeader, "wrong")
+	for i := range totpMaxFailures {
+		w := httptest.NewRecorder()
+		s.identity(w, r)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("wrong code %d: got %d, want 403", i+1, w.Code)
+		}
 	}
-	clock = clock.Add(totpLockout + 30*time.Second)
-	good, _ = totp.GenerateCode(secret, clock)
-	if code := getIdentity(t, ts, "", good, nil); code != http.StatusOK {
-		t.Fatalf("after the lockout: got %d, want 200", code)
+	for i := maxClients + 1; i <= 2*maxClients; i++ {
+		clock = clock.Add(time.Millisecond)
+		status(httptest.NewRecorder(), clientRequest(http.MethodGet, "/api/v1/status", fmt.Sprintf("2001:db8::%x", i)))
+	}
+	good, err := totp.GenerateCode(clientLimitTestSecret, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Header.Set(totpHeader, good)
+	w := httptest.NewRecorder()
+	s.identity(w, r)
+	if w.Code != http.StatusTooManyRequests || !bytes.Contains(w.Body.Bytes(), []byte("too many wrong TOTP codes")) {
+		t.Fatalf("locked client after table pressure: got %d %s, want TOTP lockout", w.Code, w.Body)
+	}
+}
+
+func TestClientCallLimit(t *testing.T) {
+	_, s, _, _ := setupServer(t)
+	if err := s.store.SetTOTP(store.TOTP{Secret: clientLimitTestSecret, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	clock := time.Unix(1_800_000_000, 0)
+	s.now = func() time.Time { return clock }
+	handler := s.handler()
+	call := func(method, path, address string) *httptest.ResponseRecorder {
+		t.Helper()
+		r := clientRequest(method, "/api/v1/"+path, address)
+		if path == "identity" {
+			code, err := totp.GenerateCode(clientLimitTestSecret, clock)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r.Header.Set(totpHeader, code)
+		}
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+	const clientA, clientB = "192.0.2.1", "192.0.2.2"
+	for i := range maxCallsPerMinute {
+		if w := call("POST", "challenge", clientA); w.Code != http.StatusOK {
+			t.Fatalf("client A challenge %d: got %d, want 200", i+1, w.Code)
+		}
+	}
+	for _, route := range []struct{ method, path string }{
+		{"POST", "challenge"}, {"GET", "identity"}, {"GET", "status"}, {"POST", "init"}, {"POST", "session"},
+	} {
+		w := call(route.method, route.path, clientA)
+		if w.Code != http.StatusTooManyRequests || w.Header().Get("Retry-After") != "60" {
+			t.Errorf("client A %s: got %d with Retry-After %q, want 429 with 60", route.path, w.Code, w.Header().Get("Retry-After"))
+		}
+		var body struct{ Error string }
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || body.Error == "" {
+			t.Errorf("client A %s: want a JSON error, got %s", route.path, w.Body)
+		}
+	}
+	if w := call("POST", "challenge", clientB); w.Code != http.StatusOK {
+		t.Errorf("client B challenge: got %d, want 200", w.Code)
+	}
+	if w := call("GET", "identity", clientB); w.Code != http.StatusOK {
+		t.Errorf("client B identity: got %d, want 200", w.Code)
+	}
+	clock = clock.Add(time.Minute - time.Millisecond)
+	if w := call("GET", "identity", clientA); w.Code != http.StatusTooManyRequests || w.Header().Get("Retry-After") != "1" {
+		t.Errorf("before reset: got %d with Retry-After %q, want 429 with 1", w.Code, w.Header().Get("Retry-After"))
+	}
+	clock = clock.Add(time.Millisecond)
+	if w := call("GET", "identity", clientA); w.Code != http.StatusOK {
+		t.Errorf("after reset: got %d, want 200", w.Code)
+	}
+}
+
+func TestClientTableBound(t *testing.T) {
+	s := newClientLimitTestServer(t)
+	clock := time.Unix(1_800_000_000, 0)
+	s.now = func() time.Time { return clock }
+	status := s.limitCalls(s.status)
+	call := func(address string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		status(w, clientRequest(http.MethodGet, "/api/v1/status", address))
+		return w
+	}
+	proxy := clientRequest(http.MethodGet, "/api/v1/identity", "")
+	proxy.Header.Set("X-Forwarded-Proto", "https")
+	proxy.Header.Set(totpHeader, "wrong")
+	for i := range totpMaxFailures {
+		w := httptest.NewRecorder()
+		s.identity(w, proxy)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("proxy wrong code %d: got %d, want 403", i+1, w.Code)
+		}
+	}
+	for i := 1; i < maxClients; i++ {
+		if w := call(fmt.Sprintf("2001:db8::%x", i)); w.Code != http.StatusOK {
+			t.Fatalf("fill client %d: got %d, want 200", i, w.Code)
+		}
+	}
+	const newcomer = "192.0.2.1"
+	callResult := call(newcomer)
+	totpResult := httptest.NewRecorder()
+	// Call the identity handler directly to reach TOTP admission.
+	s.identity(totpResult, clientRequest(http.MethodGet, "/api/v1/identity", newcomer))
+	for _, result := range []struct {
+		name string
+		w    *httptest.ResponseRecorder
+	}{{"call limit", callResult}, {"TOTP", totpResult}} {
+		if got, retry := result.w.Code, result.w.Header().Get("Retry-After"); got != http.StatusTooManyRequests || retry != "60" {
+			t.Errorf("new client at %s: got %d with Retry-After %q, want 429 with 60", result.name, got, retry)
+		}
+		var body struct{ Error string }
+		if err := json.Unmarshal(result.w.Body.Bytes(), &body); err != nil || body.Error == "" {
+			t.Errorf("new client at %s: want a JSON error, got %s", result.name, result.w.Body)
+		}
+	}
+	if w := call("2001:db8::1"); w.Code != http.StatusOK {
+		t.Errorf("existing client: got %d, want 200", w.Code)
+	}
+	good, err := totp.GenerateCode(clientLimitTestSecret, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy.Header.Set(totpHeader, good)
+	w := httptest.NewRecorder()
+	s.identity(w, proxy)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("locked proxy with good code: got %d, want 429", w.Code)
+	}
+	local := clientRequest(http.MethodGet, "/api/v1/identity", "")
+	local.Header.Set(totpHeader, good)
+	w = httptest.NewRecorder()
+	s.limitCalls(s.identity)(w, local)
+	if w.Code != http.StatusOK {
+		t.Errorf("local with good code: got %d, want 200", w.Code)
+	}
+	if len(s.clients) != maxClients || s.clients[newcomer] != nil {
+		t.Fatalf("want %d remote clients and no newcomer, got %d clients", maxClients, len(s.clients))
+	}
+	clock = clock.Add(time.Minute)
+	if w := call(newcomer); w.Code != http.StatusOK {
+		t.Errorf("new client after call windows expire: got %d, want 200", w.Code)
+	}
+	if len(s.clients) != 2 || s.clients[newcomer] == nil || s.clients["127.0.0.1"] == nil {
+		t.Fatalf("want only the newcomer and locked proxy, got %d clients", len(s.clients))
+	}
+}
+
+func TestClientFailuresExpire(t *testing.T) {
+	s := newClientLimitTestServer(t)
+	clock := time.Unix(1_800_000_000, 0)
+	s.now = func() time.Time { return clock }
+	const clientA, clientB, newcomer = "192.0.2.1", "192.0.2.2", "192.0.2.3"
+	check := func(address, code string) int {
+		r := clientRequest(http.MethodGet, "/api/v1/identity", address)
+		r.Header.Set(totpHeader, code)
+		w := httptest.NewRecorder()
+		s.identity(w, r)
+		return w.Code
+	}
+	for i := 1; i < totpMaxFailures; i++ {
+		if got := check(clientA, "wrong"); got != http.StatusForbidden {
+			t.Fatalf("client A wrong code %d: got %d, want 403", i, got)
+		}
+	}
+	if got := check(clientB, "wrong"); got != http.StatusForbidden {
+		t.Fatalf("client B wrong code: got %d, want 403", got)
+	}
+	clock = clock.Add(totpLockout - time.Millisecond)
+	for i := range maxClients - 2 {
+		s.clients[fmt.Sprintf("2001:db8::%x", i+1)] = &clientState{windowEnd: clock.Add(time.Minute)}
+	}
+	status := s.limitCalls(s.status)
+	r := clientRequest(http.MethodGet, "/api/v1/status", newcomer)
+	w := httptest.NewRecorder()
+	status(w, r)
+	if w.Code != http.StatusTooManyRequests || w.Header().Get("Retry-After") != "1" {
+		t.Fatalf("new client before failures expire: got %d with Retry-After %q, want 429 with 1", w.Code, w.Header().Get("Retry-After"))
+	}
+	clock = clock.Add(time.Millisecond)
+	for i := 1; i < totpMaxFailures; i++ {
+		if got := check(clientA, "wrong"); got != http.StatusForbidden {
+			t.Fatalf("client A wrong code %d after expiry: got %d, want 403", i, got)
+		}
+	}
+	good, err := totp.GenerateCode(clientLimitTestSecret, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := check(clientA, good); got != http.StatusOK {
+		t.Fatalf("client A good code after expiry: got %d, want 200", got)
+	}
+	w = httptest.NewRecorder()
+	status(w, r)
+	if w.Code != http.StatusOK || s.clients[clientB] != nil {
+		t.Fatalf("new client after failures expire: got %d, client B retained: %t", w.Code, s.clients[clientB] != nil)
 	}
 }
 
@@ -466,6 +1041,58 @@ func TestItemBodyStillLimited(t *testing.T) {
 	}
 }
 
+func TestAliveWithoutSession(t *testing.T) {
+	w := httptest.NewRecorder()
+	New(newInitTestStore(t), Options{}).ServeHTTP(w, clientRequest(http.MethodGet, "/api/v1/alive", ""))
+	if w.Code != http.StatusOK || w.Body.String() != `{"alive":true}` {
+		t.Fatalf("alive: got %d %q, want 200 and the exact liveness response", w.Code, w.Body)
+	}
+}
+
+func TestAliveRejectsNonLocalRequests(t *testing.T) {
+	s := newServer(newInitTestStore(t))
+	s.hosts = []string{"vault.example"}
+	handler := s.handler()
+	for _, c := range []struct {
+		name, address, host, peer string
+		status                    int
+		body                      string
+	}{
+		{"forwarded", "192.0.2.1", "localhost", "127.0.0.1:1234", http.StatusNotFound, "{\"error\":\"not found\"}\n"},
+		{"remote peer", "", "localhost", "192.0.2.1:1234", http.StatusNotFound, "{\"error\":\"not found\"}\n"},
+		{"declared host", "", "vault.example", "127.0.0.1:1234", http.StatusNotFound, "{\"error\":\"not found\"}\n"},
+		{"forbidden host", "", "other.example", "127.0.0.1:1234", http.StatusForbidden, "{\"error\":\"forbidden host\"}\n"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := clientRequest(http.MethodGet, "/api/v1/alive", c.address)
+			r.Host, r.RemoteAddr = c.host, c.peer
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, r)
+			if w.Code != c.status || w.Body.String() != c.body {
+				t.Fatalf("alive: got %d %q, want %d %q", w.Code, w.Body, c.status, c.body)
+			}
+		})
+	}
+	if len(s.clients) != 0 {
+		t.Errorf("rejected probes left %d client entries", len(s.clients))
+	}
+}
+
+func TestAliveDoesNotUseClientBudget(t *testing.T) {
+	s := newServer(newInitTestStore(t))
+	handler := s.handler()
+	for i := range maxCallsPerMinute + 1 {
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, clientRequest(http.MethodGet, "/api/v1/alive", ""))
+		if w.Code != http.StatusOK {
+			t.Fatalf("probe %d: got %d, want 200", i+1, w.Code)
+		}
+	}
+	if len(s.clients) != 0 || s.localClient != (clientState{}) {
+		t.Fatalf("probes changed client state: %d remote clients, local state %+v", len(s.clients), s.localClient)
+	}
+}
+
 func TestHealth(t *testing.T) {
 	ts, id, _ := setup(t)
 	if code := call(t, ts, "GET", "/api/v1/health", "", nil, nil); code != http.StatusUnauthorized {
@@ -481,7 +1108,91 @@ func TestHealth(t *testing.T) {
 	if code := call(t, ts, "GET", "/api/v1/health", token, nil, &h); code != http.StatusOK {
 		t.Fatalf("health: %d", code)
 	}
+	if h["version"] != version.Version {
+		t.Errorf("health version = %v, want %q", h["version"], version.Version)
+	}
 	if h["items"] != 1.0 || h["blobs"] != 1.0 || h["blob_bytes"] != float64(len(blob)) || h["sessions"] != 1.0 || h["free_bytes"].(float64) <= 0 {
 		t.Fatalf("health = %v", h)
+	}
+}
+
+func TestDeclaredHostReachesAPIAndWebUI(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ui := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "ui") })
+	ts := httptest.NewServer(New(st, Options{Hosts: []string{"vault.example"}, Web: ui}))
+	t.Cleanup(ts.Close)
+
+	for _, c := range []struct {
+		name, method, path, host, origin string
+		want                             int
+	}{
+		{"declared host", "GET", "/api/v1/status", "vault.example", "", http.StatusOK},
+		{"declared host, other case and a port", "GET", "/api/v1/status", "VAULT.example:443", "", http.StatusOK},
+		{"foreign host", "GET", "/api/v1/status", "evil.example", "", http.StatusForbidden},
+		{"web UI on the declared host", "GET", "/", "vault.example", "", http.StatusOK},
+		{"web UI on a foreign host", "GET", "/", "evil.example", "", http.StatusForbidden},
+		{"unknown API path is not a UI page", "GET", "/api/v1/nope", "vault.example", "", http.StatusNotFound},
+		// Behind a TLS proxy the browser sends an https origin for the same host:
+		// the write passes the cross-origin check and reaches the handler (404, no vault yet).
+		{"same-origin write behind a TLS proxy", "POST", "/api/v1/challenge", "vault.example", "https://vault.example", http.StatusNotFound},
+		{"cross-site write", "POST", "/api/v1/challenge", "vault.example", "https://evil.example", http.StatusForbidden},
+	} {
+		req, _ := http.NewRequest(c.method, ts.URL+c.path, nil)
+		req.Host = c.host
+		if c.origin != "" {
+			req.Header.Set("Origin", c.origin)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != c.want {
+			t.Errorf("%s: got %d, want %d", c.name, resp.StatusCode, c.want)
+		}
+	}
+}
+
+func TestSecurityHeaders(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ui := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "ui") })
+	ts := httptest.NewServer(New(st, Options{Hosts: []string{"vault.example"}, Web: ui}))
+	t.Cleanup(ts.Close)
+
+	for _, c := range []struct {
+		name, path, host string
+		noStore, hsts    bool
+	}{
+		{"API on loopback", "/api/v1/status", "", true, false},
+		{"web UI on loopback", "/", "", false, false},
+		{"API on the declared host", "/api/v1/status", "vault.example", true, true},
+		{"web UI on the declared host", "/", "vault.example", false, true},
+	} {
+		req, _ := http.NewRequest("GET", ts.URL+c.path, nil)
+		if c.host != "" {
+			req.Host = c.host
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		h := resp.Header
+		if h.Get("Content-Security-Policy") != contentSecurityPolicy || h.Get("X-Content-Type-Options") != "nosniff" ||
+			h.Get("X-Frame-Options") != "DENY" || h.Get("Referrer-Policy") != "no-referrer" {
+			t.Errorf("%s: security headers missing: %v", c.name, h)
+		}
+		if got := h.Get("Cache-Control") == "no-store"; got != c.noStore {
+			t.Errorf("%s: Cache-Control no-store = %v, want %v", c.name, got, c.noStore)
+		}
+		if got := h.Get("Strict-Transport-Security") != ""; got != c.hsts {
+			t.Errorf("%s: HSTS sent = %v, want %v", c.name, got, c.hsts)
+		}
 	}
 }

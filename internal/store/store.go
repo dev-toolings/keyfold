@@ -2,14 +2,17 @@
 package store
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -22,6 +25,13 @@ const (
 	totpFile      = "totp.json"
 	itemsDir      = "items"
 	blobsDir      = "blobs"
+	versionFile   = "version"
+	lockFile      = ".lock"
+	tmpPattern    = ".tmp-*"
+
+	// Layout is the version of the data directory layout this code reads and
+	// writes: the file names above. Items carry their own format version.
+	Layout = 1
 )
 
 var idPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
@@ -34,8 +44,9 @@ var ErrConflict = errors.New("item changed since it was read")
 
 // Store is a vault data directory.
 type Store struct {
-	dir string
-	mu  sync.Mutex // makes Put's compare-and-write atomic
+	dir  string
+	mu   sync.Mutex // makes Put's compare-and-write atomic
+	lock *os.File   // held open by Lock for the life of the process
 }
 
 // Entry is one encrypted item. ETag identifies this version of the ciphertext.
@@ -51,7 +62,9 @@ func ETag(ciphertext []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// Open creates the data directory layout if needed.
+// Open creates the data directory layout if needed, and refuses a directory
+// written by a newer layout than this code knows. A directory without a
+// version file predates it and is layout 1: Lock writes the file.
 func Open(dir string) (*Store, error) {
 	for _, d := range []string{dir, filepath.Join(dir, itemsDir), filepath.Join(dir, blobsDir)} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
@@ -61,7 +74,77 @@ func Open(dir string) (*Store, error) {
 			return nil, err
 		}
 	}
+	path := filepath.Join(dir, versionFile)
+	data, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	if err == nil {
+		v, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		if err != nil {
+			return nil, fmt.Errorf("%s does not hold a layout version", path)
+		}
+		if v > Layout {
+			return nil, fmt.Errorf("%s has layout version %d, this keyfold-server reads up to %d: use a newer one", dir, v, Layout)
+		}
+	}
 	return &Store{dir: dir}, nil
+}
+
+// ErrInUse is returned by Lock when another process serves the directory.
+var ErrInUse = errors.New("the data directory is in use by another keyfold-server")
+
+// Lock makes this process the only writer of the directory, until it exits:
+// two servers on one directory would each accept a write that overwrites the
+// other's. It then removes the temp files a killed writer left behind and
+// writes the layout version if it is missing: both are only safe once no other
+// writer can be in the middle of a write.
+func (s *Store) Lock() error {
+	return s.acquireLock(false)
+}
+
+func (s *Store) acquireLock(offline bool) (lockErr error) {
+	f, err := os.OpenFile(filepath.Join(s.dir, lockFile), os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if lockErr != nil {
+			f.Close()
+		}
+	}()
+	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		if errors.Is(err, unix.EWOULDBLOCK) {
+			return ErrInUse
+		}
+		return err
+	}
+	if !offline {
+		if _, err := os.Lstat(filepath.Join(s.dir, maintenanceFile)); err == nil {
+			return fmt.Errorf("offline maintenance was interrupted in %s: run make reset for that DATA directory", s.dir)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	for _, d := range []string{s.dir, filepath.Join(s.dir, itemsDir), filepath.Join(s.dir, blobsDir)} {
+		left, err := filepath.Glob(filepath.Join(d, tmpPattern))
+		if err != nil {
+			return err
+		}
+		for _, tmp := range left {
+			if err := os.Remove(tmp); err != nil {
+				return err
+			}
+		}
+	}
+	path := filepath.Join(s.dir, versionFile)
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		if err := writeAtomic(path, strings.NewReader(strconv.Itoa(Layout)+"\n")); err != nil {
+			return err
+		}
+	}
+	s.lock = f
+	return nil
 }
 
 // Initialized reports whether the identity file exists. It is written last
@@ -74,16 +157,16 @@ func (s *Store) Initialized() bool {
 // Init stores the encrypted identity and its recipient. The caller makes
 // sure the vault is not initialized yet.
 func (s *Store) Init(identity []byte, recipient string) error {
-	if err := writeAtomic(filepath.Join(s.dir, recipientFile), []byte(recipient+"\n")); err != nil {
+	if err := writeAtomic(filepath.Join(s.dir, recipientFile), strings.NewReader(recipient+"\n")); err != nil {
 		return err
 	}
-	return writeAtomic(filepath.Join(s.dir, identityFile), identity)
+	return writeAtomic(filepath.Join(s.dir, identityFile), bytes.NewReader(identity))
 }
 
 // SetIdentity replaces the encrypted identity, after a master password change.
 // The recipient does not change: it is the same identity, wrapped anew.
 func (s *Store) SetIdentity(identity []byte) error {
-	return writeAtomic(filepath.Join(s.dir, identityFile), identity)
+	return writeAtomic(filepath.Join(s.dir, identityFile), bytes.NewReader(identity))
 }
 
 // TOTP is the second factor state. The secret is stored in clear: the server
@@ -112,12 +195,12 @@ func (s *Store) SetTOTP(t TOTP) error {
 	if err != nil {
 		return err
 	}
-	return writeAtomic(filepath.Join(s.dir, totpFile), data)
+	return writeAtomic(filepath.Join(s.dir, totpFile), bytes.NewReader(data))
 }
 
 // ClearTOTP removes the second factor. Removing a missing one is not an error.
 func (s *Store) ClearTOTP() error {
-	err := os.Remove(filepath.Join(s.dir, totpFile))
+	err := remove(filepath.Join(s.dir, totpFile))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -178,7 +261,7 @@ func (s *Store) Put(id string, ciphertext []byte, ifMatch string) error {
 			return ErrConflict
 		}
 	}
-	return writeAtomic(s.itemPath(id), ciphertext)
+	return writeAtomic(s.itemPath(id), bytes.NewReader(ciphertext))
 }
 
 // Delete removes an item. id must be valid. Deleting a missing item returns
@@ -199,7 +282,7 @@ func (s *Store) Delete(id, ifMatch string) error {
 			return ErrConflict
 		}
 	}
-	return os.Remove(s.itemPath(id))
+	return remove(s.itemPath(id))
 }
 
 // PutBlob streams an encrypted attachment to disk. id must be valid. Nothing
@@ -208,23 +291,7 @@ func (s *Store) PutBlob(id string, r io.Reader) error {
 	if !ValidID(id) {
 		return errors.New("invalid blob id")
 	}
-	f, err := os.CreateTemp(filepath.Join(s.dir, blobsDir), ".tmp-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name()) // no-op after a successful rename
-	if _, err := io.Copy(f, r); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	return os.Rename(f.Name(), s.blobPath(id))
+	return writeAtomic(s.blobPath(id), r)
 }
 
 // Blob opens an encrypted attachment. A missing one returns an error matching
@@ -242,7 +309,7 @@ func (s *Store) DeleteBlob(id string) error {
 	if !ValidID(id) {
 		return errors.New("invalid blob id")
 	}
-	return os.Remove(s.blobPath(id))
+	return remove(s.blobPath(id))
 }
 
 // Usage counts the stored items and attachments, and the free space left on
@@ -289,20 +356,17 @@ func (s *Store) itemPath(id string) string {
 	return filepath.Join(s.dir, itemsDir, id+".age")
 }
 
-// writeAtomic writes data to a 0600 temp file in the target directory, then
-// renames it over path.
-func writeAtomic(path string, data []byte) error {
-	f, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
+// writeAtomic streams r to a 0600 temp file in the target directory, renames
+// it over path, then flushes the directory. Nothing is stored if r fails
+// before its end.
+func writeAtomic(path string, r io.Reader) error {
+	f, err := os.CreateTemp(filepath.Dir(path), tmpPattern)
 	if err != nil {
 		return err
 	}
 	tmp := f.Name()
 	defer os.Remove(tmp) // no-op after a successful rename
-	if err := f.Chmod(0o600); err != nil {
-		f.Close()
-		return err
-	}
-	if _, err := f.Write(data); err != nil {
+	if _, err := io.Copy(f, r); err != nil {
 		f.Close()
 		return err
 	}
@@ -313,5 +377,32 @@ func writeAtomic(path string, data []byte) error {
 	if err := f.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	return syncDir(filepath.Dir(path))
+}
+
+// syncDir flushes a directory: without it, a file renamed or removed there can
+// be back in its former state after a power loss, although the caller was told
+// the change was done. Its error says the change is made and not flushed, so
+// that nobody takes it for a change that did not happen.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err == nil {
+		err = d.Sync()
+		d.Close()
+	}
+	if err != nil {
+		return fmt.Errorf("the change in %s is made but not flushed to disk: %w", dir, err)
+	}
+	return nil
+}
+
+// remove deletes a file and flushes its directory.
+func remove(path string) error {
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+	return syncDir(filepath.Dir(path))
 }

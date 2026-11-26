@@ -1,7 +1,14 @@
 // age operations shared by every client. No DOM and no framework: it runs in a
 // page, a browser extension and Bun.
 import { Decrypter, Encrypter } from "age-encryption";
-import { ITEM_VERSION, type Item, KINDS } from "./item";
+import {
+  CLASSIFIED_ITEM_VERSION,
+  checkEnvironment,
+  ENVIRONMENT_ITEM_VERSION,
+  ITEM_VERSION,
+  type Item,
+  KINDS,
+} from "./item";
 
 export function toBase64(bytes: Uint8Array): string {
   let s = "";
@@ -27,14 +34,19 @@ export async function unwrapIdentity(file: Uint8Array, password: string): Promis
   return (await d.decrypt(file, "text")).trim();
 }
 
-/** Encrypts an item to the recipient. Only the current format is written. */
+/** Encrypts an item to the recipient using the version required by its fields. */
 export async function encryptItem(item: Item, to: string): Promise<Uint8Array> {
-  if (item.v !== ITEM_VERSION)
-    throw new Error(`Élément « ${item.name} » au format v${item.v}, attendu v${ITEM_VERSION}.`);
+  if (item.v !== ITEM_VERSION && item.v !== CLASSIFIED_ITEM_VERSION && item.v !== ENVIRONMENT_ITEM_VERSION)
+    throw new Error(
+      `Élément « ${item.name} » au format v${item.v}, attendu v${ITEM_VERSION}, v${CLASSIFIED_ITEM_VERSION} ou v${ENVIRONMENT_ITEM_VERSION}.`,
+    );
   if (!KINDS.includes(item.kind)) throw new Error(`Type inconnu : ${item.kind}.`);
+  const environment = checkEnvironment(item.environment);
+  const classified = item.project || item.specialty || item.languages?.length || item.tags?.length;
+  const v = environment ? ENVIRONMENT_ITEM_VERSION : classified ? CLASSIFIED_ITEM_VERSION : ITEM_VERSION;
   const e = new Encrypter();
   e.addRecipient(to);
-  return e.encrypt(JSON.stringify(item));
+  return e.encrypt(JSON.stringify({ ...item, environment, v }));
 }
 
 /** Encrypts raw bytes (an attachment) to the recipient. */

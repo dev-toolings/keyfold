@@ -10,34 +10,95 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
 // ErrNoAgent means no agent answers on the socket.
 var ErrNoAgent = errors.New("no running agent: run kf unlock")
 
-// SocketPath returns $XDG_RUNTIME_DIR/keyfold/agent.sock.
-func SocketPath() (string, error) {
-	dir := os.Getenv("XDG_RUNTIME_DIR")
-	if dir == "" {
-		return "", errors.New("XDG_RUNTIME_DIR is not set")
+// SocketPath returns the configured socket path before resolving symlinks in
+// its parent chain. It uses $XDG_RUNTIME_DIR/keyfold/agent.sock when set and
+// keyfold-<uid>/agent.sock in the temp dir otherwise.
+func SocketPath() string {
+	if dir := os.Getenv("XDG_RUNTIME_DIR"); dir != "" {
+		return filepath.Join(dir, "keyfold", "agent.sock")
 	}
-	return filepath.Join(dir, "keyfold", "agent.sock"), nil
+	return filepath.Join(os.TempDir(), fmt.Sprintf("keyfold-%d", os.Getuid()), "agent.sock")
+}
+
+// ownDir returns the resolved path to a real socket directory owned by this
+// user with mode 0700. Each resolved ancestor must belong to this user or
+// root and must have the sticky bit if group or other users can write to it.
+// When create is true, ownDir creates the socket directory or sets its mode.
+func ownDir(dir string, create bool) (string, error) {
+	dir, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	parent, err := filepath.EvalSymlinks(filepath.Dir(dir))
+	if err != nil {
+		return "", err
+	}
+	uid := os.Getuid()
+	if err := checkAncestors(parent, uid); err != nil {
+		return "", err
+	}
+	dir = filepath.Join(parent, filepath.Base(dir))
+	if create {
+		if err := os.Mkdir(dir, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+			return "", err
+		}
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return "", err
+	}
+	if st, ok := info.Sys().(*syscall.Stat_t); !info.IsDir() || !ok || int(st.Uid) != uid {
+		return "", fmt.Errorf("%s is not a directory of this user", dir)
+	}
+	if info.Mode() != os.ModeDir|0o700 {
+		if !create {
+			return "", fmt.Errorf("%s must have mode 0700", dir)
+		}
+		if err := os.Chmod(dir, 0o700); err != nil {
+			return "", err
+		}
+	}
+	return dir, nil
+}
+
+func checkAncestors(dir string, uid int) error {
+	// Check from the root down so each directory's parent is already trusted.
+	if parent := filepath.Dir(dir); parent != dir {
+		if err := checkAncestors(parent, uid); err != nil {
+			return err
+		}
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is not a directory", dir)
+	}
+	if st, ok := info.Sys().(*syscall.Stat_t); !ok || (st.Uid != 0 && int(st.Uid) != uid) {
+		return fmt.Errorf("%s belongs to another user", dir)
+	}
+	if m := info.Mode(); m.Perm()&0o022 != 0 && m&os.ModeSticky == 0 {
+		return fmt.Errorf("%s is writable by other users without the sticky bit", dir)
+	}
+	return nil
 }
 
 // Listen creates the socket directory (0700) and the socket (0600).
 func Listen() (net.Listener, error) {
-	path, err := SocketPath()
+	path := SocketPath()
+	dir, err := ownDir(filepath.Dir(path), true)
 	if err != nil {
 		return nil, err
 	}
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, err
-	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		return nil, err
-	}
+	path = filepath.Join(dir, filepath.Base(path))
 	os.Remove(path) // stale socket from an agent that did not exit cleanly
 	l, err := net.Listen("unix", path)
 	if err != nil {
@@ -86,11 +147,15 @@ func handle(c net.Conn, identity string) bool {
 }
 
 func request(cmd string) (string, error) {
-	path, err := SocketPath()
+	path := SocketPath()
+	dir, err := ownDir(filepath.Dir(path), false)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", ErrNoAgent
+		}
 		return "", err
 	}
-	c, err := net.Dial("unix", path)
+	c, err := net.Dial("unix", filepath.Join(dir, filepath.Base(path)))
 	if err != nil {
 		return "", ErrNoAgent
 	}

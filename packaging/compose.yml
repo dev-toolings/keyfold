@@ -1,0 +1,37 @@
+services:
+  vault:
+    image: "keyfold:${VERSION:-dev}"
+    command: ["-listen", "127.0.0.1:8717"]
+    environment:
+      KEYFOLD_ALLOWED_HOSTS: "${KEYFOLD_HOST:-vault.example.internal}"
+    ports:
+      - "443:8443"
+    volumes:
+      - vault-data:/data
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    stop_grace_period: 20s
+
+  caddy:
+    image: caddy:2.11.9-alpine
+    # Share vault's loopback so Keyfold trusts Caddy's X-Forwarded-For for
+    # per-client limits. Publish Caddy's port on vault, which owns the network.
+    network_mode: "service:vault"
+    environment:
+      KEYFOLD_HOST: "${KEYFOLD_HOST:-vault.example.internal}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    tmpfs:
+      - /config:rw,noexec,nosuid,nodev,mode=0700
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    stop_grace_period: 20s
+
+volumes:
+  vault-data:
+  caddy-data:

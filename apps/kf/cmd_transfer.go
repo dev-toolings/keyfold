@@ -63,12 +63,20 @@ func cmdExport(c *client, args []string, stdin, stdout *os.File, stderr io.Write
 		return err
 	}
 	defer c.logout()
+	if err := c.whole(); err != nil { // never a file that passes for the whole vault
+		return err
+	}
 	items := make([]vault.Item, 0, len(entries))
 	attached := 0
 	for _, e := range entries {
 		it, _ := vault.Upgrade(e.item)
 		items = append(items, it)
 		attached += len(it.Attachments)
+	}
+	if *format == "keyfold" {
+		items = append(items, c.projects...)
+	} else if len(c.projects) > 0 {
+		fmt.Fprintf(stderr, "warning: %d project(s) require the Keyfold export format\n", len(c.projects))
 	}
 	if attached > 0 {
 		fmt.Fprintf(stderr, "warning: %d attachment(s) are not exported; download them from the web UI\n", attached)
@@ -94,8 +102,8 @@ func cmdExport(c *client, args []string, stdin, stdout *os.File, stderr io.Write
 	return err
 }
 
-// cmdImport adds the items of an export file. An item whose name and value
-// are already in the vault is skipped; another name clash gets a " (2)" suffix.
+// cmdImport adds the items of an export file. An identical import is skipped;
+// another name clash gets a " (2)" suffix.
 // An age file (from `export -encrypt`) asks for its passphrase.
 func cmdImport(c *client, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("import", flag.ContinueOnError)
@@ -131,21 +139,35 @@ func cmdImport(c *client, args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	defer c.logout()
-	values := map[string]string{} // name -> sameness key, of the vault and of the items added so far
-	for _, e := range entries {
-		values[e.item.Name] = sameness(e.item)
+	if err := c.whole(); err != nil { // an imported item may be one that cannot be read
+		return err
 	}
-	added, dups := 0, 0
+	items, projectDuplicates, err := prepareProjectImports(items, c.projects)
+	if err != nil {
+		return err
+	}
+	byName := make(map[string]vault.Item, len(entries)+len(items))
+	for _, e := range entries {
+		byName[e.item.Name] = e.item
+	}
+	compareClassification := *format == "keyfold"
+	added, dups := 0, projectDuplicates
 	for _, it := range items {
-		// Walk "name", "name (2)"...: the same value under one of them means
-		// this item was imported already.
+		if it.Kind == vault.ProjectKind {
+			if err := c.put(newEntry(), it, id.Recipient()); err != nil {
+				return fmt.Errorf("%s: %w (%d item(s) imported before)", it.Name, err, added)
+			}
+			added++
+			continue
+		}
+		// Walk "name", "name (2)"... to find a previous import or a free name.
 		name, dup := it.Name, false
 		for n := 2; ; n++ {
-			v, ok := values[name]
+			previous, ok := byName[name]
 			if !ok {
 				break
 			}
-			if v == sameness(it) {
+			if sameImport(previous, it, compareClassification) {
 				dup = true
 				break
 			}
@@ -159,7 +181,7 @@ func cmdImport(c *client, args []string, stdout, stderr io.Writer) error {
 		if err := c.put(newEntry(), it, id.Recipient()); err != nil {
 			return fmt.Errorf("%s: %w (%d item(s) imported before)", it.Name, err, added)
 		}
-		values[it.Name] = sameness(it)
+		byName[it.Name] = it
 		added++
 	}
 	for _, name := range skipped {
@@ -167,6 +189,40 @@ func cmdImport(c *client, args []string, stdout, stderr io.Writer) error {
 	}
 	fmt.Fprintf(stderr, "%d item(s) imported, %d already present, %d of an unsupported type (payment cards...)\n", added, dups, len(skipped))
 	return nil
+}
+
+// Project memberships use the name. Keep an existing project or reject a
+// metadata conflict before any writes, so a suffix cannot detach its items.
+func prepareProjectImports(items, existing []vault.Item) ([]vault.Item, int, error) {
+	projects := make(map[string]vault.Item, len(existing))
+	for _, project := range existing {
+		projects[project.NameKey] = project
+	}
+	kept := make([]vault.Item, 0, len(items))
+	duplicates := 0
+	for _, item := range items {
+		if item.Kind == vault.ProjectKind {
+			if previous, ok := projects[item.NameKey]; ok {
+				if !sameImport(previous, item, true) {
+					return nil, 0, fmt.Errorf("project %q already exists with different classification", item.Name)
+				}
+				duplicates++
+				continue
+			}
+			projects[item.NameKey] = item
+		}
+		kept = append(kept, item)
+	}
+	return kept, duplicates, nil
+}
+
+func sameImport(a, b vault.Item, compareClassification bool) bool {
+	if (compareClassification || b.Environment != "") && a.Environment != b.Environment {
+		return false
+	}
+	return sameness(a) == sameness(b) && (!compareClassification ||
+		a.Project == b.Project && a.Specialty == b.Specialty &&
+			slices.Equal(a.Languages, b.Languages) && slices.Equal(a.Tags, b.Tags))
 }
 
 // sameness tells two copies of one item apart from two items sharing a name.

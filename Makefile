@@ -13,14 +13,34 @@ C_WARN    := \033[33m
 C_ERR     := \033[31m
 C_RESET   := \033[0m
 
-.PHONY: help install dev server web-dev site-dev build web-build site-build fmt vet test typecheck lint ts-test check deploy-dry-run deploy-prod clean
+.PHONY: help install seed reset dev server web-dev site-dev build image web-build site-build fmt vet test typecheck lint ts-test check deploy-dry-run deploy-prod clean
 
 # ─── Install / Setup ──────────────────────────────────────────────────────────
 
-install: ## Download Go modules and web packages
+install: ## Check the toolchain, then install and verify the locked Go modules and web packages
+	@missing=""; for tool in go gofmt bun; do \
+		command -v $$tool >/dev/null 2>&1 || missing="$$missing $$tool"; \
+	done; \
+	if [ -n "$$missing" ]; then \
+		printf "$(C_ERR)[make] missing tools:%s$(C_RESET)\n" "$$missing"; exit 1; \
+	fi
+	@command -v shuttle >/dev/null 2>&1 || \
+		printf "$(C_WARN)[make] shuttle not found: only the deploy targets need it$(C_RESET)\n"
+	@go version
+	@printf "bun version %s\n" "$$(bun --version)"
 	@go mod download
-	@bun install
-	@printf "$(C_OK)[make] dependencies installed$(C_RESET)\n"
+	@go mod verify
+	@bun install --frozen-lockfile
+	@printf "$(C_OK)[make] dependencies installed and verified$(C_RESET)\n"
+
+seed reset: export KEYFOLD_DEV_DATA = $(DATA)
+
+seed: ## Create a local demo vault with fake entries (DATA; offers to stop a running make dev)
+	@go run ./tools/dev-vault seed
+	@printf "$(C_OK)[make] demo vault ready$(C_RESET)\n"
+
+reset: ## Empty the local vault after confirmation (DATA; offers to stop a running make dev)
+	@go run ./tools/dev-vault reset
 
 # ─── Run ──────────────────────────────────────────────────────────────────────
 
@@ -42,10 +62,43 @@ site-dev: ## Start the public product site dev server (apps/site, Next.js)
 
 # ─── Build ────────────────────────────────────────────────────────────────────
 
+COMMIT ?= $(shell git rev-parse --short=7 HEAD 2>/dev/null)
+
+ifeq ($(origin VERSION),undefined)
+VERSION := $(shell git describe --tags --exact-match --match 'v*' HEAD 2>/dev/null || printf '%s\n' dev)
+else
+# Keep overrides literal before make can expand them in a recipe or export.
+override VERSION := $(value VERSION)
+endif
+
+override define version_newline
+
+
+endef
+
+# Reject newlines before make passes the validation command to the shell.
+override version_valid := $(if $(findstring $(version_newline),$(VERSION)),,$(shell LC_ALL=C; export LC_ALL; \
+	case '$(subst ','"'"',$(VERSION))' in \
+		(dev) printf yes ;; \
+		(*[!A-Za-z0-9.+-]*|v) ;; \
+		(v*) printf yes ;; \
+	esac))
+
+ifeq ($(version_valid),yes)
 build: ## Build the kf and keyfold-server binaries into bin/
-	@go build -o bin/kf ./apps/kf
-	@go build -o bin/keyfold-server ./apps/keyfold-server
+	@ldflags="-X keyfold/internal/version.Version=$(VERSION) -X keyfold/internal/version.Commit=$(COMMIT)"; \
+		go build -ldflags "$$ldflags" -o bin/kf ./apps/kf && \
+		go build -ldflags "$$ldflags" -o bin/keyfold-server ./apps/keyfold-server
 	@printf "$(C_OK)[make] built bin/kf and bin/keyfold-server$(C_RESET)\n"
+
+image: ## Build the vault container image tagged keyfold:$(VERSION)
+	@docker build --file packaging/Dockerfile --build-arg VERSION="$(VERSION)" \
+		--build-arg COMMIT="$(COMMIT)" --tag "keyfold:$(VERSION)" .
+	@printf "$(C_OK)[make] built image %s$(C_RESET)\n" "keyfold:$(VERSION)"
+else
+build image:
+	@printf "$(C_ERR)[make] invalid VERSION: expected dev or v followed by letters, digits, dots, hyphens or plus signs$(C_RESET)\n"; exit 1
+endif
 
 web-build: ## Build the web UI into apps/web/dist
 	@cd apps/web && bun run build

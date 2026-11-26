@@ -13,9 +13,10 @@ import (
 	"image/png"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -23,21 +24,27 @@ import (
 	"filippo.io/age"
 	"github.com/pquerna/otp/totp"
 
+	"keyfold/internal/hosts"
 	"keyfold/internal/logger"
 	"keyfold/internal/store"
 	"keyfold/internal/vault"
+	"keyfold/internal/version"
 )
 
 // DefaultMaxBlob is the attachment size limit when none is given.
 const DefaultMaxBlob = 100 << 20
 
 const (
+	alivePath    = "/api/v1/alive"
 	maxBody      = 1 << 20
 	challengeTTL = 60 * time.Second
 	// maxChallenges bounds the memory held by unanswered challenges, which
 	// anyone can request: past it, the oldest is dropped.
-	maxChallenges = 100
-	sessionIdle   = 15 * time.Minute
+	maxChallenges     = 100
+	sessionIdle       = 15 * time.Minute
+	sessionMaxAge     = 12 * time.Hour
+	maxClients        = 1024
+	maxCallsPerMinute = 60
 
 	// TOTP: a code is a 6 digit number, so guesses are rationed.
 	totpMaxFailures = 5
@@ -45,6 +52,15 @@ const (
 	totpPeriod      = 30 // seconds, the RFC 6238 default
 	totpHeader      = "X-TOTP-Code"
 	ageHeader       = "age-encryption.org/v1\n"
+	installHeader   = "X-Install-Token"
+
+	// contentSecurityPolicy is sent with every response. The web UI loads its
+	// own files only; the one outside call is the breach check (HIBP_RANGE_URL
+	// in packages/vault-core/src/hibp.ts). Styles may be inline (chart colors,
+	// React style attributes), scripts may not.
+	contentSecurityPolicy = "default-src 'self'; connect-src 'self' https://api.pwnedpasswords.com; " +
+		"img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; " +
+		"base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
 )
 
 type challenge struct {
@@ -52,41 +68,87 @@ type challenge struct {
 	expires time.Time
 }
 
+type sessionState struct {
+	lastUsed time.Time
+	expires  time.Time
+}
+
+type clientState struct {
+	windowEnd    time.Time
+	calls        int
+	totpFailures int
+	totpUntil    time.Time // expires both the failure count and any resulting lockout
+}
+
 type server struct {
 	store   *store.Store
-	maxBlob int64 // attachment size limit, in bytes
+	maxBlob int64        // attachment size limit, in bytes
+	hosts   []string     // host names accepted besides loopback ones
+	web     http.Handler // built web UI, nil when the API is served alone
 
 	now     func() time.Time // replaced by tests
 	started time.Time
 
-	mu         sync.Mutex
-	challenges map[string]challenge
-	sessions   map[string]time.Time // token -> last use
+	initMu       sync.Mutex // guards vault creation and the install token
+	installToken string
+	initStore    func(identity []byte, recipient string) error // replaced by tests
 
-	totpFailures    int
-	totpLockedUntil time.Time
-	totpLastStep    int64 // last accepted time step: a code is used once
+	mu          sync.Mutex
+	challenges  map[string]challenge
+	sessions    map[string]sessionState
+	clients     map[string]*clientState // remote clients only
+	localClient clientState             // reserved for requests that pass hosts.Local
+
+	totpLastStep int64 // last accepted time step: a code is used once
 }
 
-// New returns the API handler for the given store. maxBlob limits the size of
-// one attachment, in bytes.
-func New(st *store.Store, maxBlob int64) http.Handler {
+// Options configures the handler New returns.
+type Options struct {
+	// MaxBlob limits the size of one attachment, in bytes. Zero means DefaultMaxBlob.
+	MaxBlob int64
+	// Hosts are the host names accepted besides loopback ones, lower case and
+	// without a port: the names a TLS reverse proxy in front of the server answers to.
+	Hosts []string
+	// Web serves the built web UI on every path outside /api/. Optional.
+	Web http.Handler
+}
+
+// New returns the handler for the given store: the API under /api/ and, when
+// o.Web is set, the web UI everywhere else, behind the same host check and
+// access log.
+func New(st *store.Store, o Options) http.Handler {
 	s := newServer(st)
-	s.maxBlob = maxBlob
+	if o.MaxBlob > 0 {
+		s.maxBlob = o.MaxBlob
+	}
+	s.hosts = o.Hosts
+	s.web = o.Web
+	if s.installToken != "" {
+		slog.Info("Use this install token to create the vault from a non-local device", "installToken", s.installToken)
+	}
 	return s.handler()
 }
 
 func newServer(st *store.Store) *server {
-	return &server{store: st, maxBlob: DefaultMaxBlob, now: time.Now, started: time.Now(), challenges: map[string]challenge{}, sessions: map[string]time.Time{}}
+	s := &server{
+		store: st, maxBlob: DefaultMaxBlob, now: time.Now, started: time.Now(),
+		initStore:  st.Init,
+		challenges: map[string]challenge{}, sessions: map[string]sessionState{}, clients: map[string]*clientState{},
+	}
+	if !st.Initialized() {
+		s.installToken = randomHex(16)
+	}
+	return s
 }
 
 func (s *server) handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/v1/status", s.status)
-	mux.HandleFunc("POST /api/v1/init", s.initVault)
-	mux.HandleFunc("GET /api/v1/identity", s.identity)
-	mux.HandleFunc("POST /api/v1/challenge", s.challenge)
-	mux.HandleFunc("POST /api/v1/session", s.session)
+	mux.HandleFunc("GET "+alivePath, alive)
+	mux.HandleFunc("GET /api/v1/status", s.limitCalls(s.status))
+	mux.HandleFunc("POST /api/v1/init", s.limitCalls(s.initVault))
+	mux.HandleFunc("GET /api/v1/identity", s.limitCalls(s.identity))
+	mux.HandleFunc("POST /api/v1/challenge", s.limitCalls(s.challenge))
+	mux.HandleFunc("POST /api/v1/session", s.limitCalls(s.session))
 	mux.HandleFunc("GET /api/v1/health", s.auth(s.health))
 	mux.HandleFunc("GET /api/v1/items", s.auth(s.listItems))
 	mux.HandleFunc("PUT /api/v1/items/{id}", s.auth(s.putItem))
@@ -99,7 +161,96 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/totp/setup", s.auth(s.totpSetup))
 	mux.HandleFunc("POST /api/v1/totp/enable", s.auth(s.totpEnable))
 	mux.HandleFunc("POST /api/v1/totp/disable", s.auth(s.totpDisable))
-	return logger.Access(localOnly(http.NewCrossOriginProtection().Handler(s.limitBody(mux))))
+	if s.web != nil {
+		mux.Handle("/api/", http.NotFoundHandler()) // an unknown API path is not a page of the UI
+		mux.Handle("/", s.web)
+	}
+	return logger.Access(s.allowedHost(secure(http.NewCrossOriginProtection().Handler(s.limitBody(mux)))))
+}
+
+// limitsFor returns a client's state, or the wait for an available slot, with s.mu held.
+func (s *server) limitsFor(r *http.Request, now time.Time) (*clientState, time.Duration) {
+	if hosts.Local(r) {
+		return &s.localClient, 0
+	}
+	address := hosts.Client(r)
+	if client := s.clients[address]; client != nil {
+		return client, 0
+	}
+	if len(s.clients) >= maxClients {
+		var retry time.Duration
+		for addr, client := range s.clients {
+			// A slot frees when both the call window and the TOTP restriction expire.
+			remaining := max(client.windowEnd.Sub(now), client.totpUntil.Sub(now))
+			if remaining <= 0 {
+				delete(s.clients, addr)
+			} else if retry == 0 || remaining < retry {
+				retry = remaining
+			}
+		}
+		if len(s.clients) >= maxClients {
+			// New remote clients wait while all slots have active restrictions.
+			// This preserves call budgets and TOTP limits under address churn.
+			return nil, retry
+		}
+	}
+	client := &clientState{}
+	s.clients[address] = client
+	return client, 0
+}
+
+func retryAfter(wait time.Duration) string {
+	return strconv.Itoa(int((wait + time.Second - 1) / time.Second))
+}
+
+// limitCalls gives each remote client one budget shared by the session-free routes.
+func (s *server) limitCalls(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if hosts.Local(r) {
+			next(w, r)
+			return
+		}
+		s.mu.Lock()
+		now := s.now()
+		client, retry := s.limitsFor(r, now)
+		if client != nil {
+			if !now.Before(client.windowEnd) {
+				client.windowEnd = now.Add(time.Minute)
+				client.calls = 0
+			}
+			if client.calls < maxCallsPerMinute {
+				client.calls++
+				s.mu.Unlock()
+				next(w, r)
+				return
+			}
+			retry = client.windowEnd.Sub(now)
+		}
+		s.mu.Unlock()
+		w.Header().Set("Retry-After", retryAfter(retry))
+		fail(w, http.StatusTooManyRequests, "too many requests, try again later")
+	}
+}
+
+// secure sets the response headers that keep the web UI, which holds the
+// decrypted vault in memory, out of frames and free of foreign scripts. API
+// answers (ciphertext, session tokens) are never cached. HSTS is sent on a
+// declared host only: a loopback name is served over plain HTTP.
+func secure(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Content-Security-Policy", contentSecurityPolicy)
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "no-referrer")
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			h.Set("Cache-Control", "no-store")
+		}
+		if !hosts.Loopback(hosts.Name(r.Host)) {
+			h.Set("Strict-Transport-Security", "max-age=31536000")
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // limitBody caps request bodies: 1 MiB, or maxBlob for an attachment. It sets
@@ -116,16 +267,13 @@ func (s *server) limitBody(next http.Handler) http.Handler {
 	})
 }
 
-// localOnly rejects requests whose Host is not a loopback name. It stops DNS
-// rebinding, where a hostile page reaches 127.0.0.1 under its own domain name.
-// Cross-site writes are rejected by http.CrossOriginProtection.
-func localOnly(next http.Handler) http.Handler {
+// allowedHost rejects requests whose Host is neither a loopback name nor one
+// of the declared hosts. It stops DNS rebinding, where a hostile page reaches
+// the server under its own domain name. Cross-site writes are rejected by
+// http.CrossOriginProtection.
+func (s *server) allowedHost(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		host := r.Host
-		if h, _, err := net.SplitHostPort(r.Host); err == nil {
-			host = h
-		}
-		if ip := net.ParseIP(host); host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+		if host := hosts.Name(r.Host); !hosts.Loopback(host) && !slices.Contains(s.hosts, host) {
 			fail(w, http.StatusForbidden, "forbidden host")
 			return
 		}
@@ -143,9 +291,13 @@ func fail(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]string{"error": msg})
 }
 
-// internalError logs err (paths and OS errors only, never content).
-func internalError(w http.ResponseWriter, err error) {
+// logInternalError logs err (paths and OS errors only, never content).
+func logInternalError(w http.ResponseWriter, err error) {
 	slog.Error("internal error", "err", err, "requestId", w.Header().Get("X-Request-Id"))
+}
+
+func internalError(w http.ResponseWriter, err error) {
+	logInternalError(w, err)
 	fail(w, http.StatusInternalServerError, "internal error")
 }
 
@@ -173,6 +325,16 @@ func (s *server) status(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) initVault(w http.ResponseWriter, r *http.Request) {
+	s.initMu.Lock()
+	defer s.initMu.Unlock()
+	if s.store.Initialized() {
+		fail(w, http.StatusConflict, "already initialized")
+		return
+	}
+	if !hosts.Local(r) && (s.installToken == "" || subtle.ConstantTimeCompare([]byte(r.Header.Get(installHeader)), []byte(s.installToken)) != 1) {
+		fail(w, http.StatusForbidden, installHeader+" is required and must match the install token in the server log")
+		return
+	}
 	var req struct {
 		Identity  []byte `json:"identity"`
 		Recipient string `json:"recipient"`
@@ -188,21 +350,20 @@ func (s *server) initVault(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "recipient is not an X25519 age recipient")
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.store.Initialized() {
-		fail(w, http.StatusConflict, "already initialized")
-		return
+	if err := s.initStore(req.Identity, req.Recipient); err != nil {
+		// A directory sync can fail after the identity has been written.
+		if !s.store.Initialized() {
+			internalError(w, err)
+			return
+		}
+		logInternalError(w, err)
 	}
-	if err := s.store.Init(req.Identity, req.Recipient); err != nil {
-		internalError(w, err)
-		return
-	}
+	s.installToken = ""
 	writeJSON(w, http.StatusCreated, map[string]bool{"initialized": true})
 }
 
-// identity hands out the encrypted identity. With TOTP on, it takes a valid code
-// or a live session: without either, nobody can fetch it for an offline attack.
+// identity hands out the encrypted identity. With TOTP off, only local
+// requests can fetch it. With TOTP on, a valid code or live session is required.
 func (s *server) identity(w http.ResponseWriter, r *http.Request) {
 	if !s.store.Initialized() {
 		fail(w, http.StatusNotFound, "not initialized")
@@ -213,8 +374,12 @@ func (s *server) identity(w http.ResponseWriter, r *http.Request) {
 		internalError(w, err)
 		return
 	}
+	if !t.Enabled && !hosts.Local(r) {
+		fail(w, http.StatusForbidden, "Enable the second factor on the server machine first")
+		return
+	}
 	if t.Enabled && !s.liveSession(r) {
-		if code, msg := s.checkTOTP(t.Secret, r.Header.Get(totpHeader)); code != 0 {
+		if code, msg := s.checkTOTP(w, r, t.Secret, r.Header.Get(totpHeader)); code != 0 {
 			fail(w, code, msg)
 			return
 		}
@@ -283,31 +448,33 @@ func (s *server) session(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := s.now()
 	c, ok := s.challenges[req.ID]
 	delete(s.challenges, req.ID) // single use, whatever the answer
-	if !ok || s.now().After(c.expires) || subtle.ConstantTimeCompare(c.answer, req.Answer) != 1 {
+	if !ok || now.After(c.expires) || subtle.ConstantTimeCompare(c.answer, req.Answer) != 1 {
 		fail(w, http.StatusUnauthorized, "challenge failed")
 		return
 	}
 	token := randomHex(32)
-	s.sessions[token] = s.now()
+	s.sessions[token] = sessionState{lastUsed: now, expires: now.Add(sessionMaxAge)}
 	writeJSON(w, http.StatusOK, map[string]string{"token": token})
 }
 
 // liveSession reports whether r carries a live bearer token, and refreshes its idle timer.
 func (s *server) liveSession(r *http.Request) bool {
 	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for k, last := range s.sessions {
-		if now.Sub(last) > sessionIdle {
+	now := s.now()
+	for k, session := range s.sessions {
+		if now.Sub(session.lastUsed) > sessionIdle || !now.Before(session.expires) {
 			delete(s.sessions, k)
 		}
 	}
-	_, live := s.sessions[token]
+	session, live := s.sessions[token]
 	if ok && live {
-		s.sessions[token] = now
+		session.lastUsed = now
+		s.sessions[token] = session
 	}
 	return ok && live
 }
@@ -325,14 +492,23 @@ func (s *server) auth(next http.HandlerFunc) http.HandlerFunc {
 
 // checkTOTP returns 0 when code is valid for secret, else an HTTP status and a
 // message. It accepts the previous, current and next 30 s window, refuses a
-// code from a window already used, and locks every check out for 15 minutes
-// after 5 failures in a row. Failures answer 403, never 401: a wrong code must
-// not end the caller's session.
-func (s *server) checkTOTP(secret, code string) (int, string) {
+// code from a window already used, and locks the client out after 5 failures.
+// The count and lockout expire 15 minutes after the last counted failure.
+// A wrong code answers 403 so the caller's session stays open.
+func (s *server) checkTOTP(w http.ResponseWriter, r *http.Request, secret, code string) (int, string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	now := s.now()
-	if now.Before(s.totpLockedUntil) {
+	client, retry := s.limitsFor(r, now)
+	if client == nil {
+		s.mu.Unlock()
+		w.Header().Set("Retry-After", retryAfter(retry))
+		return http.StatusTooManyRequests, "too many requests, try again later"
+	}
+	defer s.mu.Unlock()
+	if !now.Before(client.totpUntil) {
+		client.totpFailures = 0
+	}
+	if client.totpFailures >= totpMaxFailures {
 		return http.StatusTooManyRequests, "too many wrong TOTP codes, try again later"
 	}
 	if code == "" {
@@ -346,16 +522,14 @@ func (s *server) checkTOTP(secret, code string) (int, string) {
 		}
 		if step := at.Unix() / totpPeriod; step > s.totpLastStep {
 			s.totpLastStep = step
-			s.totpFailures = 0
+			client.totpFailures = 0
+			client.totpUntil = time.Time{}
 			return 0, ""
 		}
 		break // a replayed code counts as a failure
 	}
-	s.totpFailures++
-	if s.totpFailures >= totpMaxFailures {
-		s.totpFailures = 0
-		s.totpLockedUntil = now.Add(totpLockout)
-	}
+	client.totpFailures++
+	client.totpUntil = now.Add(totpLockout)
 	return http.StatusForbidden, "invalid TOTP code"
 }
 
@@ -379,7 +553,7 @@ func (s *server) putIdentity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if t.Enabled {
-		if code, msg := s.checkTOTP(t.Secret, req.Code); code != 0 {
+		if code, msg := s.checkTOTP(w, r, t.Secret, req.Code); code != 0 {
 			fail(w, code, msg)
 			return
 		}
@@ -447,7 +621,7 @@ func (s *server) totpEnable(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusConflict, "no pending TOTP setup")
 		return
 	}
-	if code, msg := s.checkTOTP(t.Secret, req.Code); code != 0 {
+	if code, msg := s.checkTOTP(w, r, t.Secret, req.Code); code != 0 {
 		fail(w, code, msg)
 		return
 	}
@@ -475,7 +649,7 @@ func (s *server) totpDisable(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusConflict, "TOTP is not enabled")
 		return
 	}
-	if code, msg := s.checkTOTP(t.Secret, req.Code); code != 0 {
+	if code, msg := s.checkTOTP(w, r, t.Secret, req.Code); code != 0 {
 		fail(w, code, msg)
 		return
 	}
@@ -612,6 +786,15 @@ func (s *server) deleteBlob(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func alive(w http.ResponseWriter, r *http.Request) {
+	if !hosts.Local(r) {
+		fail(w, http.StatusNotFound, "not found")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	io.WriteString(w, `{"alive":true}`)
+}
+
 // health reports what the server knows about the vault: counts and sizes of
 // the ciphertext it stores, free disk space, sessions. It never sees a name
 // or a value: content indicators are computed by the clients.
@@ -631,6 +814,7 @@ func (s *server) health(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"api":            "v1",
+		"version":        version.Version,
 		"items":          u.Items,
 		"blobs":          u.Blobs,
 		"blob_bytes":     u.BlobBytes,
