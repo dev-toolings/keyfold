@@ -138,13 +138,13 @@ func setupVault(t *testing.T) (string, *store.Store, *age.X25519Identity) {
 	t.Cleanup(ts.Close)
 
 	runtimeDir(t)
-	l, err := agent.Listen()
+	l, err := agent.Listen(ts.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan struct{})
 	go func() { agent.Serve(l, id.String(), time.Minute); close(done) }()
-	t.Cleanup(func() { agent.Lock(); <-done })
+	t.Cleanup(func() { agent.Lock(ts.URL); <-done })
 	return ts.URL, st, id
 }
 
@@ -309,5 +309,26 @@ func TestRedirectIsNotFollowed(t *testing.T) {
 	}
 	if hits != 1 || leaked != "" {
 		t.Errorf("hits = %d, headers that reached the redirect target = %q", hits, leaked)
+	}
+}
+
+// An agent that cannot open its socket says why on stdout, which unlock shows:
+// it has no terminal of its own.
+func TestAgentStartErrorIsReported(t *testing.T) {
+	long := filepath.Join(t.TempDir(), strings.Repeat("d", 120))
+	if err := os.MkdirAll(long, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_RUNTIME_DIR", long) // past the Unix socket path limit
+	id, _ := age.GenerateX25519Identity()
+	out := fileWith(t, "")
+	err := cmdAgent("https://vault.example.test", nil, fileWith(t, id.String()+"\n"), out)
+	if err == nil {
+		t.Fatal("the agent started on a socket path past the limit")
+	}
+	out.Seek(0, 0)
+	b, _ := io.ReadAll(out)
+	if line := strings.TrimSpace(string(b)); line != err.Error() {
+		t.Fatalf("agent stdout = %q, want the error %q", line, err)
 	}
 }

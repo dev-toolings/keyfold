@@ -40,13 +40,13 @@ func TestMCPToolsNeverReturnValues(t *testing.T) {
 	defer ts.Close()
 
 	runtimeDir(t)
-	l, err := agent.Listen()
+	l, err := agent.Listen(ts.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan struct{})
 	go func() { agent.Serve(l, id.String(), time.Minute); close(done) }()
-	defer func() { agent.Lock(); <-done }()
+	defer func() { agent.Lock(ts.URL); <-done }()
 
 	var stderr bytes.Buffer
 	args := []string{"-server", ts.URL, "set", "fake-key", "-note", "fake-note-xyz"}
@@ -261,7 +261,7 @@ func TestMCPImportEnv(t *testing.T) {
 // Code mode serves search and execute only; a script chains the operations,
 // sees no host API, stops on time, and never gets a value.
 func TestMCPCodeMode(t *testing.T) {
-	url, _, _ := setupVault(t)
+	url, _, id := setupVault(t)
 	var stderr bytes.Buffer
 	if code := run([]string{"-server", url, "set", "fake-key"}, fileWith(t, "fake-passphrase-123\n"), fileWith(t, ""), &stderr); code != 0 {
 		t.Fatalf("set: exit %d: %s", code, stderr.String())
@@ -348,6 +348,13 @@ func TestMCPCodeMode(t *testing.T) {
 	var hits atomic.Int32
 	hung := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits.Add(1); <-r.Context().Done() }))
 	defer hung.Close()
+	l, err := agent.Listen(hung.URL) // each server has its own agent
+	if err != nil {
+		t.Fatal(err)
+	}
+	hungAgent := make(chan struct{})
+	go func() { agent.Serve(l, id.String(), time.Minute); close(hungAgent) }()
+	defer func() { agent.Lock(hung.URL); <-hungAgent }()
 	start := time.Now()
 	_, err = execute(ctx, hung.URL, "return kf.listItems()")
 	if err == nil || hits.Load() == 0 || time.Since(start) > 5*time.Second {

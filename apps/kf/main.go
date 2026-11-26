@@ -39,8 +39,9 @@ const usage = `usage: kf [-server URL] <command> [args]
 commands:
   version                    print the version
   init                       create the vault (asks the master password twice)
-  unlock [-ttl 1h]           unlock and start the background agent
-  lock                       stop the agent
+  unlock [-ttl 1h]           unlock and start the background agent for
+                             this server (one agent per server URL)
+  lock                       stop the agent for this server
   get <name>                 print a value to stdout (refused on a terminal)
   set <name> [-kind K] [-note N]
                              store a value read from stdin (kinds: login,
@@ -106,9 +107,9 @@ func run(args []string, stdin, stdout *os.File, stderr io.Writer) int {
 	case "unlock":
 		err = cmdUnlock(c, rest, stdin, stderr)
 	case "agent":
-		err = cmdAgent(rest, stdin, stdout)
+		err = cmdAgent(c.base, rest, stdin, stdout)
 	case "lock":
-		err = agent.Lock()
+		err = agent.Lock(c.base)
 		if errors.Is(err, agent.ErrNoAgent) {
 			err = nil
 		}
@@ -321,7 +322,7 @@ func newEntry() entry {
 // item that cannot be read must not put every other secret out of reach: its
 // id goes to c.unreadable.
 func (c *client) open() (*age.X25519Identity, []entry, error) {
-	s, err := agent.Identity()
+	s, err := agent.Identity(c.base)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -490,13 +491,13 @@ func cmdUnlock(c *client, args []string, stdin *os.File, stderr io.Writer) error
 	if id.Recipient().String() != resp.Recipient {
 		return errors.New("identity does not match the stored recipient")
 	}
-	agent.Lock() // replace a previous agent, if any
+	agent.Lock(c.base) // replace a previous agent for this server, if any
 
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(exe, "agent", "-ttl", ttl.String())
+	cmd := exec.Command(exe, "-server", c.base, "agent", "-ttl", ttl.String())
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	in, err := cmd.StdinPipe()
 	if err != nil {
@@ -512,9 +513,12 @@ func cmdUnlock(c *client, args []string, stdin *os.File, stderr io.Writer) error
 	fmt.Fprintln(in, id.String())
 	in.Close()
 	line, err := bufio.NewReader(out).ReadString('\n')
-	if err != nil || strings.TrimSpace(line) != "ready" {
+	if line = strings.TrimSpace(line); err != nil || line != "ready" {
 		cmd.Process.Kill()
 		cmd.Wait()
+		if line != "" {
+			return fmt.Errorf("agent failed to start: %s", line)
+		}
 		return errors.New("agent failed to start")
 	}
 	cmd.Process.Release()
@@ -522,9 +526,9 @@ func cmdUnlock(c *client, args []string, stdin *os.File, stderr io.Writer) error
 	return nil
 }
 
-// cmdAgent is the detached process started by unlock. It reads the identity
-// from stdin, never from argv or the environment.
-func cmdAgent(args []string, stdin, stdout *os.File) error {
+// cmdAgent is the detached process started by unlock, serving the agent for
+// server. It reads the identity from stdin, never from argv or the environment.
+func cmdAgent(server string, args []string, stdin, stdout *os.File) error {
 	fs := flag.NewFlagSet("agent", flag.ContinueOnError)
 	ttl := fs.Duration("ttl", time.Hour, "agent lifetime")
 	if err := fs.Parse(args); err != nil {
@@ -538,8 +542,9 @@ func cmdAgent(args []string, stdin, stdout *os.File) error {
 	if err != nil {
 		return errors.New("agent: invalid identity on stdin")
 	}
-	l, err := agent.Listen()
+	l, err := agent.Listen(server)
 	if err != nil {
+		fmt.Fprintln(stdout, err) // unlock shows it: the agent has no terminal
 		return err
 	}
 	fmt.Fprintln(stdout, "ready")

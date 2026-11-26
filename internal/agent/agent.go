@@ -1,12 +1,17 @@
 // Package agent holds the unlocked identity in a background process and hands
-// it to CLI calls over a Unix socket only reachable by the same user.
+// it to CLI calls over a Unix socket only reachable by the same user. Each
+// server URL gets its own agent, so vaults on two servers can be unlocked at
+// the same time.
 package agent
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,14 +22,30 @@ import (
 // ErrNoAgent means no agent answers on the socket.
 var ErrNoAgent = errors.New("no running agent: run kf unlock")
 
-// SocketPath returns the configured socket path before resolving symlinks in
-// its parent chain. It uses $XDG_RUNTIME_DIR/keyfold/agent.sock when set and
-// keyfold-<uid>/agent.sock in the temp dir otherwise.
-func SocketPath() string {
+// SocketPath returns the socket path of the agent for server, before resolving
+// symlinks in its parent chain. The file is agent-<key>.sock, where key is the
+// first 8 hex digits of a SHA-256 of the server URL with its scheme and host in lower case,
+// no default port and no trailing slash. It lives in $XDG_RUNTIME_DIR/keyfold when set and in
+// keyfold-<uid> in the temp dir otherwise.
+func SocketPath(server string) string {
+	name := "agent-" + serverKey(server) + ".sock"
 	if dir := os.Getenv("XDG_RUNTIME_DIR"); dir != "" {
-		return filepath.Join(dir, "keyfold", "agent.sock")
+		return filepath.Join(dir, "keyfold", name)
 	}
-	return filepath.Join(os.TempDir(), fmt.Sprintf("keyfold-%d", os.Getuid()), "agent.sock")
+	return filepath.Join(os.TempDir(), fmt.Sprintf("keyfold-%d", os.Getuid()), name)
+}
+
+func serverKey(server string) string {
+	server = strings.TrimRight(server, "/")
+	if u, err := url.Parse(server); err == nil && u.Host != "" {
+		u.Scheme, u.Host = strings.ToLower(u.Scheme), strings.ToLower(u.Host)
+		if port := u.Port(); (u.Scheme == "https" && port == "443") || (u.Scheme == "http" && port == "80") {
+			u.Host = strings.TrimSuffix(u.Host, ":"+port) // the same server; keeps IPv6 brackets
+		}
+		server = u.String()
+	}
+	sum := sha256.Sum256([]byte(server))
+	return hex.EncodeToString(sum[:4]) // short: a socket path is limited to about 104 bytes
 }
 
 // ownDir returns the resolved path to a real socket directory owned by this
@@ -91,9 +112,10 @@ func checkAncestors(dir string, uid int) error {
 	return nil
 }
 
-// Listen creates the socket directory (0700) and the socket (0600).
-func Listen() (net.Listener, error) {
-	path := SocketPath()
+// Listen creates the socket directory (0700) and the socket (0600) of the
+// agent for server.
+func Listen(server string) (net.Listener, error) {
+	path := SocketPath(server)
 	dir, err := ownDir(filepath.Dir(path), true)
 	if err != nil {
 		return nil, err
@@ -146,8 +168,8 @@ func handle(c net.Conn, identity string) bool {
 	return false
 }
 
-func request(cmd string) (string, error) {
-	path := SocketPath()
+func request(server, cmd string) (string, error) {
+	path := SocketPath(server)
 	dir, err := ownDir(filepath.Dir(path), false)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -171,11 +193,11 @@ func request(cmd string) (string, error) {
 	return strings.TrimSpace(line), nil
 }
 
-// Identity returns the identity string held by the agent.
-func Identity() (string, error) { return request("identity") }
+// Identity returns the identity string held by the agent for server.
+func Identity(server string) (string, error) { return request(server, "identity") }
 
-// Lock stops the agent.
-func Lock() error {
-	_, err := request("lock")
+// Lock stops the agent for server.
+func Lock(server string) error {
+	_, err := request(server, "lock")
 	return err
 }
