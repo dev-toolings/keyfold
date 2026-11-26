@@ -46,7 +46,8 @@ The screenshots use a demo vault filled with fake items.
 - **Web UI:** full item sheets (identifier, addresses, live TOTP code, custom
   fields, attachments, history), a generator, a health dashboard.
 - **AI agents:** `kf mcp` lists items, generates secrets and reports vault
-  health, never returning a value.
+  health, never returning a value. With a deposit key, `kf mcp -deposit` works
+  without unlocking the vault and cannot read a value at all.
 - **Import:** Bitwarden JSON, 1Password 1pux, CSV. **Export:** Keyfold JSON, Bitwarden JSON.
 - **Second factor:** TOTP is required for encrypted identity downloads from other devices.
   Direct loopback access can use the vault with TOTP off. With TOTP on, downloads
@@ -226,7 +227,9 @@ then creates the vault and turns TOTP on from the same device.
 The API is versioned: every route lives under `/api/v1`. `GET /api/v1/items`
 returns an `etag` per item; `PUT /api/v1/items/{id}` with `If-Match: <etag>`
 answers 412 when the item changed since, so two clients never overwrite each
-other in silence.
+other in silence. With `If-None-Match: *` it answers 412 when the id is taken:
+the web UI writes an accepted deposit that way, so a second client or a retry
+never overwrites it.
 
 An item sheet holds an identifier, the secret, web addresses, a TOTP secret
 (the current code shows with its countdown), custom fields (hidden or not),
@@ -360,6 +363,40 @@ and `console.log` only: no file, network or process access. A script stops
 after 30 seconds, and its result and logs are capped at 64 KiB. No function
 returns a value, so no script can either.
 
+### Deposit mode: no unlock, no read
+
+`kf mcp -deposit` holds a deposit key instead of the unlocked identity. Create
+one in the web UI (AI page): the browser makes a random token and an age key
+pair, the server keeps the token's SHA-256 and the public key, and the page
+shows once the `KEYFOLD_DEPOSIT_KEY` value with the `claude mcp add` command.
+The value also pins the vault's public key, so a server cannot swap in its own.
+
+- `generate_item` and `import_env` encrypt the new items locally for the vault's
+  public key and deposit them (`POST /api/v1/inbox`). The deposit key cannot
+  decrypt them, nor any item. A deposit waits outside the vault: `kf get`,
+  `kf run`, `kf inject` and every listing ignore it. A retry, or a second
+  import of the same value, finds the first deposit instead of making a copy.
+- When the owner opens the vault in the web UI, a deposit with a new name
+  becomes an item, one equal to the stored value or unreadable is dropped, and
+  one whose name holds another value waits on the AI page: replace the value
+  (the old one stays in the history), keep both, or refuse. The page names the
+  key that made each deposit, as the server recorded it.
+- `list_items` reads a catalog the web UI encrypts for the deposit key when the
+  key is created, when the vault opens and after each change made there: names,
+  kinds, projects and environments, never a value, a note or a date.
+  `catalog_updated_at` says when. `vault_health` is not offered.
+- A deposit is 64 KiB at most, and a key holds 500 waiting deposits at most.
+  Revoking a key on the AI page deletes its waiting deposits and catalog.
+
+```sh
+claude mcp add keyfold -s user -e KEYFOLD_SERVER=https://vault.example.internal \
+  -e KEYFOLD_DEPOSIT_KEY=kfdep1... -- "$PWD/bin/kf" mcp -deposit
+```
+
+A leaked deposit key lets its holder deposit items, which only enter the vault
+through the rules above, and read the names of the catalog. It never gives a
+value. Backups hold the deposit keys, the waiting deposits and the catalogs.
+
 ## Security model
 
 - Encryption is client side only, with [age](https://age-encryption.org). The
@@ -419,8 +456,8 @@ it gets its name once whole, so a backup that fails or is killed leaves only a
 `-restore` needs a missing or empty directory: it never writes over a vault. It
 refuses an archive cut short, and a failed restore leaves nothing behind.
 
-The archive holds what the data directory holds: items and attachments stay
-encrypted with age and it asks no master password, but `totp.json` is in clear
+The archive holds what the data directory holds: items, attachments, deposits
+and catalogs stay encrypted with age and it asks no master password, but `totp.json` is in clear
 (see [Second factor](#second-factor-totp)). Protect it like the directory itself.
 
 `kf export` is not a backup: it leaves attachments out.

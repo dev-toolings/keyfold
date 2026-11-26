@@ -493,7 +493,7 @@ const cli: DocPage = {
 
 const mcp: DocPage = {
   key: "mcp",
-  updated: "2026-11-11",
+  updated: "2026-11-26",
   content: {
     en: {
       slug: "mcp",
@@ -555,6 +555,9 @@ const mcp: DocPage = {
             { code: 'claude mcp add keyfold -- "$PWD/bin/kf" mcp' },
             {
               p: "Code mode: `kf mcp -code-mode` serves two tools instead of four. `search` describes the functions of a `kf` object (the same operations as the tools), and `execute` runs JavaScript that calls them, so one call can chain several operations and return only what the agent needs. The interpreter sees `kf` and `console.log` only: no file, network or process access, 30 seconds and 64 KiB at most.",
+            },
+            {
+              p: "Deposit mode: `kf mcp -deposit` uses a deposit key created on the AI page of the web UI instead of the unlocked vault. `generate_item` and `import_env` encrypt new items for the vault's public key and deposit them; `list_items` reads a catalog of names the web UI writes for the key. No unlock, and the key cannot read any value. Deposits stay outside the vault until you open it in the web UI: a new name is added, a name that holds another value waits for your choice (replace, keep both, refuse).",
             },
           ],
         },
@@ -630,6 +633,9 @@ const mcp: DocPage = {
             { code: 'claude mcp add keyfold -- "$PWD/bin/kf" mcp' },
             {
               p: "Code mode : `kf mcp -code-mode` sert deux outils au lieu de quatre. `search` décrit les fonctions d'un objet `kf` (les mêmes opérations que les outils), et `execute` exécute du JavaScript qui les appelle : un seul appel enchaîne plusieurs opérations et ne renvoie que ce dont l'agent a besoin. L'interpréteur ne voit que `kf` et `console.log` : ni fichier, ni réseau, ni processus, 30 secondes et 64 Kio au plus.",
+            },
+            {
+              p: "Mode dépôt : `kf mcp -deposit` utilise une clé de dépôt créée sur la page IA de l'interface web au lieu du coffre déverrouillé. `generate_item` et `import_env` chiffrent les nouveaux éléments pour la clé publique du coffre et les déposent ; `list_items` lit un catalogue des noms que l'interface web écrit pour la clé. Pas de déverrouillage, et la clé ne peut lire aucune valeur. Les dépôts restent hors du coffre jusqu'à ce que vous l'ouvriez dans l'interface web : un nouveau nom est ajouté, un nom qui porte une autre valeur attend votre choix (remplacer, garder les deux, refuser).",
             },
           ],
         },

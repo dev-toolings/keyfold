@@ -34,6 +34,10 @@ This changelog follows Keep a Changelog and uses Semantic Versioning.
 - Email setup: with `KEYFOLD_OWNER_EMAIL` and SMTP settings, a code emailed to
   the owner lets another device create the vault and turn TOTP on, without the
   install token or an SSH tunnel.
+- Deposit mode for AI agents: `kf mcp -deposit` with a deposit key made in the
+  web UI adds secrets and lists names without unlocking the vault, and cannot
+  read a value. Deposits enter the vault when the owner opens it; a name that
+  already holds another value waits for the owner's choice.
 - One `kf` agent per server URL: a local and a remote vault can be unlocked at
   the same time, for example by two MCP servers.
 - In-memory challenges expire after 60 seconds. Sessions expire after 15 minutes
