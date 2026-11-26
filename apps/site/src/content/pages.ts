@@ -270,7 +270,7 @@ const security: DocPage = {
 
 const cli: DocPage = {
   key: "cli",
-  updated: "2026-11-11",
+  updated: "2026-11-26",
   content: {
     en: {
       slug: "cli",
@@ -302,8 +302,8 @@ const cli: DocPage = {
             {
               list: [
                 "`kf init` asks for the master password twice, without echo, and creates the vault. For remote creation, set `KEYFOLD_INSTALL_TOKEN` to the install token from the server log.",
-                "`kf unlock [-ttl 1h]` asks for the master password and, if TOTP is enabled, a code. It decrypts the identity and starts a background agent on `$XDG_RUNTIME_DIR/keyfold/agent.sock` or, if that variable is unset, on `keyfold-<uid>/agent.sock` in the temp directory.",
-                "`kf lock` stops the agent.",
+                "`kf unlock [-ttl 1h]` asks for the master password and, if TOTP is enabled, a code. It decrypts the identity and starts a background agent for this server on `$XDG_RUNTIME_DIR/keyfold/agent-<key>.sock` or, if that variable is unset, on `keyfold-<uid>/agent-<key>.sock` in the temp directory. `<key>` comes from the server URL: each server has its own agent, so a local and a remote vault can be unlocked at the same time.",
+                "`kf lock` stops the agent for this server.",
               ],
             },
           ],
@@ -410,8 +410,8 @@ const cli: DocPage = {
             {
               list: [
                 "`kf init` demande deux fois le mot de passe principal, sans l'afficher, et crée le coffre. Pour une création à distance, définissez `KEYFOLD_INSTALL_TOKEN` avec le jeton d'installation du journal du serveur.",
-                "`kf unlock [-ttl 1h]` demande le mot de passe principal et, si le TOTP est activé, un code. La commande déchiffre l'identité et lance un agent en arrière-plan sur `$XDG_RUNTIME_DIR/keyfold/agent.sock` ou, si cette variable est absente, sur `keyfold-<uid>/agent.sock` dans le dossier temporaire.",
-                "`kf lock` arrête l'agent.",
+                "`kf unlock [-ttl 1h]` demande le mot de passe principal et, si le TOTP est activé, un code. La commande déchiffre l'identité et lance un agent en arrière-plan pour ce serveur sur `$XDG_RUNTIME_DIR/keyfold/agent-<key>.sock` ou, si cette variable est absente, sur `keyfold-<uid>/agent-<key>.sock` dans le dossier temporaire. `<key>` dépend de l'URL du serveur : chaque serveur a son agent, donc un coffre local et un coffre distant peuvent être déverrouillés en même temps.",
+                "`kf lock` arrête l'agent de ce serveur.",
               ],
             },
           ],

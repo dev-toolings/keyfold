@@ -164,8 +164,8 @@ the server log.
 |---|---|
 | `kf version` | Prints the build version and commit (if available) without a server or agent. |
 | `kf init` | Asks the master password twice (no echo) and creates the vault. |
-| `kf unlock [-ttl 1h]` | Asks for the master password and a code if TOTP is enabled, decrypts the identity and starts a background agent on `$XDG_RUNTIME_DIR/keyfold/agent.sock` (if unset, `keyfold-<uid>/agent.sock` in the temp directory). |
-| `kf lock` | Stops the agent. |
+| `kf unlock [-ttl 1h]` | Asks for the master password and a code if TOTP is enabled, decrypts the identity and starts a background agent for this server on `$XDG_RUNTIME_DIR/keyfold/agent-<key>.sock` (if unset, `keyfold-<uid>/agent-<key>.sock` in the temp directory), where `<key>` comes from the server URL. Each server has its own agent, so a local and a remote vault can be unlocked at the same time. |
+| `kf lock` | Stops the agent for this server. |
 | `kf get <name>` | Prints the value and a newline to stdout. Refused (exit 1) when stdout is a terminal. |
 | `kf set <name> [-kind K] [-note N]` | Reads the value from stdin (no echo on a terminal; one trailing newline is dropped). Kinds: `login` (default), `token`, `note`, `identity`, `ssh-key`, `ssh-passphrase`. An existing item gets the new value and keeps every field no flag sets; the old value goes to its history (20 values kept). |
 | `kf read kf://<name>/<field>` | Prints one field, refused on a terminal like `get`. Fields: `value` (or `password`), `username`, `note`, `url` (the first), `totp` (the current code), or a custom field name. Without `/<field>`, the value. |

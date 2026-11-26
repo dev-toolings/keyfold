@@ -34,6 +34,8 @@ This changelog follows Keep a Changelog and uses Semantic Versioning.
 - Email setup: with `KEYFOLD_OWNER_EMAIL` and SMTP settings, a code emailed to
   the owner lets another device create the vault and turn TOTP on, without the
   install token or an SSH tunnel.
+- One `kf` agent per server URL: a local and a remote vault can be unlocked at
+  the same time, for example by two MCP servers.
 - In-memory challenges expire after 60 seconds. Sessions expire after 15 minutes
   of inactivity or 12 hours from creation.
 - Encrypted identity downloads outside direct loopback access require TOTP to be
