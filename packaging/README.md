@@ -28,6 +28,26 @@ sudo systemctl enable --now keyfold.service
 On first start the server logs the install token you need to create the vault
 from another device.
 
+## Update a host installation
+
+From a clone with `deploy/vault.mk` (excluded from Git) holding the ssh
+destination and the address of the vault host, `make deploy-prod` builds `kf`,
+`keyfold-server` and the web UI for the host's architecture, installs them and
+restarts `keyfold.service`. It never touches the vault data. It refuses a tree
+with uncommitted or untracked files and a HEAD not pushed to its upstream branch.
+The ssh account needs passwordless `sudo`.
+
+```make
+VAULT_HOST := ops@vault-host
+VAULT_URL  := https://vault.example.internal
+# Optional: the root of a private CA, such as Caddy's internal one.
+VAULT_CA   := /path/to/private-root.crt
+```
+
+Every file is staged next to its target first, then switched by renames: a
+failure while staging leaves the host as it was, and a rerun finishes a
+deployment cut short. The script is `packaging/deploy-host.sh`.
+
 ## Email setup
 
 To create the vault and turn TOTP on from another device without the install

@@ -73,7 +73,10 @@ tools/interop/   Go helper for the Go/browser encryption interop test
 One Go module (`go.mod`) and one Bun workspace (`package.json`, `bun.lock`)
 at the root. `make help` lists every command.
 
-`make deploy-dry-run` and `make deploy-prod` require `deploy/prod`, an operator-local directory excluded from Git.
+`make deploy-site-dry-run` and `make deploy-site` publish the public site and require `deploy/prod`, an
+operator-local directory excluded from Git. `make deploy-prod` updates a host installation of the vault over
+ssh (`packaging/deploy-host.sh`) to the pushed HEAD, and reads `VAULT_HOST`, `VAULT_URL` and optionally
+`VAULT_CA` from `deploy/vault.mk`.
 
 ## Server
 
@@ -390,7 +393,7 @@ The value also pins the vault's public key, so a server cannot swap in its own.
 
 ```sh
 claude mcp add keyfold -s user -e KEYFOLD_SERVER=https://vault.example.internal \
-  -e KEYFOLD_DEPOSIT_KEY=kfdep1... -- "$PWD/bin/kf" mcp -deposit
+  -e KEYFOLD_DEPOSIT_KEY=kfdep1... -- kf mcp -deposit
 ```
 
 A leaked deposit key lets its holder deposit items, which only enter the vault

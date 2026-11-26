@@ -6,6 +6,12 @@ DATA   ?= ./data
 
 PROD_DIR := deploy/prod
 
+# Operator-local, excluded from Git: VAULT_HOST (ssh destination of the vault
+# host), VAULT_URL (its HTTPS address) and optionally VAULT_CA (a private CA file).
+-include deploy/vault.mk
+# Handed to recipes through the environment, never pasted into shell code.
+export VAULT_HOST VAULT_URL VAULT_CA
+
 C_SECTION := \033[1;33m
 C_TARGET  := \033[36m
 C_OK      := \033[32m
@@ -13,7 +19,7 @@ C_WARN    := \033[33m
 C_ERR     := \033[31m
 C_RESET   := \033[0m
 
-.PHONY: help install seed reset dev server web-dev site-dev build image web-build site-build fmt vet test typecheck lint ts-test check deploy-dry-run deploy-prod clean
+.PHONY: help install seed reset dev server web-dev site-dev build image web-build site-build fmt vet test typecheck lint ts-test check deploy-prod deploy-site-dry-run deploy-site clean
 
 # ─── Install / Setup ──────────────────────────────────────────────────────────
 
@@ -143,10 +149,25 @@ check: fmt vet test typecheck lint ts-test ## Run every check
 
 # ─── Deploy ───────────────────────────────────────────────────────────────────
 
-deploy-dry-run: ## Preview the production deployment of the public site (changes nothing)
+ifeq ($(version_valid),yes)
+deploy-prod: ## Update the vault host (deploy/vault.mk) to the pushed HEAD; the vault data stays
+	@[ -n "$$VAULT_HOST" ] && [ -n "$$VAULT_URL" ] || { \
+		printf "$(C_ERR)[make] set VAULT_HOST and VAULT_URL in deploy/vault.mk$(C_RESET)\n"; exit 1; }
+	@changes=$$(git status --porcelain) && [ -z "$$changes" ] || { \
+		printf "$(C_ERR)[make] uncommitted or untracked files: commit before deploying$(C_RESET)\n"; exit 1; }
+	@git rev-parse --verify --quiet @{u} >/dev/null && unpushed=$$(git log @{u}.. --oneline) && [ -z "$$unpushed" ] || { \
+		printf "$(C_ERR)[make] HEAD is not pushed to its upstream branch: push before deploying$(C_RESET)\n"; exit 1; }
+	@sh packaging/deploy-host.sh "$$VAULT_HOST" "$$VAULT_URL" "$(VERSION)" "$(COMMIT)"
+	@printf "$(C_OK)[make] vault host updated to %s (%s)$(C_RESET)\n" "$(COMMIT)" "$$VAULT_URL"
+else
+deploy-prod:
+	@printf "$(C_ERR)[make] invalid VERSION: expected dev or v followed by letters, digits, dots, hyphens or plus signs$(C_RESET)\n"; exit 1
+endif
+
+deploy-site-dry-run: ## Preview the production deployment of the public site (changes nothing)
 	@cd $(PROD_DIR) && shuttle deploy --config config.json --dry-run
 
-deploy-prod: ## Deploy the public site (keyfold.pulseview.app) to production with Shuttle
+deploy-site: ## Deploy the public site (keyfold.pulseview.app) to production with Shuttle
 	@git diff --quiet && git diff --cached --quiet || { \
 		printf "$(C_ERR)[make] uncommitted changes: commit before deploying$(C_RESET)\n"; exit 1; }
 	@[ -z "$$(git log @{u}.. --oneline 2>/dev/null)" ] || { \
@@ -172,5 +193,5 @@ help: ## Show this help
 			printf "\n%s%s%s\n", s, name, r; next } \
 		/^[a-zA-Z0-9_-]+:.*## / { target = $$1; sub(/:.*/, "", target); \
 			desc = $$0; sub(/^.*## /, "", desc); \
-			printf "  %s%-14s%s %s\n", t, target, r, desc } \
+			printf "  %s%-20s%s %s\n", t, target, r, desc } \
 	' $(MAKEFILE_LIST)
