@@ -31,6 +31,9 @@ This changelog follows Keep a Changelog and uses Semantic Versioning.
 - Content Security Policy, frame and MIME-sniffing protections, no referrer,
   no API caching and HSTS on declared non-loopback hosts.
 - Single-use install token for vault creation outside direct loopback access.
+- Email setup: with `KEYFOLD_OWNER_EMAIL` and SMTP settings, a code emailed to
+  the owner lets another device create the vault and turn TOTP on, without the
+  install token or an SSH tunnel.
 - In-memory challenges expire after 60 seconds. Sessions expire after 15 minutes
   of inactivity or 12 hours from creation.
 - Encrypted identity downloads outside direct loopback access require TOTP to be

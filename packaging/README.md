@@ -28,6 +28,37 @@ sudo systemctl enable --now keyfold.service
 On first start the server logs the install token you need to create the vault
 from another device.
 
+## Email setup
+
+To create the vault and turn TOTP on from another device without the install
+token or an SSH tunnel, give the server the owner's email and an SMTP account.
+The web UI then asks for that email and a 6 digit code sent to it. Put the
+settings in `/etc/keyfold/keyfold.env`, readable by root only: systemd reads it
+before the service drops its privileges.
+
+```sh
+sudo install -d -m 0700 /etc/keyfold
+sudo test -e /etc/keyfold/keyfold.env || sudo install -m 0600 /dev/null /etc/keyfold/keyfold.env
+sudoedit /etc/keyfold/keyfold.env
+sudo systemctl restart keyfold.service
+```
+
+```sh
+KEYFOLD_OWNER_EMAIL=owner@example.com
+KEYFOLD_SMTP_ADDR=smtp.gmail.com:587
+KEYFOLD_SMTP_USER=owner@example.com
+KEYFOLD_SMTP_PASSWORD=app-password
+```
+
+With Gmail, `KEYFOLD_SMTP_PASSWORD` is an app password, not the account
+password. Any SMTP service works: port 465 uses implicit TLS, any other port
+must offer STARTTLS. Set `KEYFOLD_SMTP_FROM` when the sender differs from the
+user. A malformed owner email, or a missing SMTP address or sender, stops the server at
+start, with its reason in `journalctl -u keyfold.service`. The server tries the
+SMTP connection and login only when someone asks for a code: the web page then
+says a code was sent whatever happens, and a failed send appears in the journal
+as `setup email not sent`.
+
 ## Scheduled backup
 
 Use the updated `keyfold.service` for new installations. On an existing host,

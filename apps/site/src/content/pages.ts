@@ -650,7 +650,7 @@ const mcp: DocPage = {
 
 const selfHosting: DocPage = {
   key: "self-hosting",
-  updated: "2026-11-25",
+  updated: "2026-11-26",
   content: {
     en: {
       slug: "self-hosting",
@@ -750,6 +750,9 @@ const selfHosting: DocPage = {
             },
             {
               p: "If you create the vault remotely, read the single-use `installToken` from the server's startup log using the log command above. A restart before creation generates a new token. When you enter the token in the web form, the web UI sends it in `X-Install-Token`. The vault is created, then the page tries to unlock it and reports that you must enable the second factor on the server machine. Nothing is lost. Do not create the vault again. Open Keyfold over direct loopback as described above, unlock with the same master password and enable TOTP in Settings. Then reload the remote page and unlock with your master password and TOTP code. For remote `kf init`, set `KEYFOLD_INSTALL_TOKEN` to the install token, target the HTTPS URL and complete the same TOTP setup before unlocking remotely.",
+            },
+            {
+              p: "To skip the install token and the loopback step, set up email setup: put `KEYFOLD_OWNER_EMAIL` and the `KEYFOLD_SMTP_*` settings in `/etc/keyfold/keyfold.env` (see `packaging/README.md`) and restart the service. The web form then asks for the owner's email, sends a 6 digit code to it, creates the vault and turns TOTP on from the same device.",
             },
           ],
         },
@@ -940,6 +943,9 @@ const selfHosting: DocPage = {
             },
             {
               p: "Si vous créez le coffre à distance, récupérez le jeton à usage unique `installToken` dans le journal de démarrage du serveur avec la commande de lecture des journaux ci-dessus. Un redémarrage avant la création génère un nouveau jeton. Lorsque vous saisissez le jeton dans le formulaire, l'interface web l'envoie dans `X-Install-Token`. Le coffre est créé, puis la page tente de le déverrouiller et vous indique que vous devez activer la double authentification sur la machine serveur. Rien n'est perdu. Ne créez pas le coffre une seconde fois. Ouvrez Keyfold en boucle locale directe comme indiqué ci-dessus, déverrouillez le coffre avec le même mot de passe principal et activez le TOTP dans les Paramètres. Rechargez ensuite la page distante et déverrouillez le coffre avec votre mot de passe principal et votre code TOTP. Pour `kf init` à distance, donnez le jeton d'installation à `KEYFOLD_INSTALL_TOKEN`, utilisez l'URL HTTPS et suivez la même procédure d'activation du TOTP avant de déverrouiller le coffre à distance.",
+            },
+            {
+              p: "Pour vous passer du jeton et de l'étape en boucle locale, activez la configuration par email : placez `KEYFOLD_OWNER_EMAIL` et les réglages `KEYFOLD_SMTP_*` dans `/etc/keyfold/keyfold.env` (voir `packaging/README.md`) puis redémarrez le service. Le formulaire demande alors l'email du propriétaire, y envoie un code à 6 chiffres, crée le coffre et active le TOTP depuis le même appareil.",
             },
           ],
         },

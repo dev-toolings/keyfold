@@ -133,6 +133,19 @@ Vault creation requires `X-Install-Token` if the connection or host is non-loopb
 Direct loopback creation with a loopback host and no forwarding headers needs no token.
 Creating the vault clears the token, and restarting before creation logs a new one.
 
+Email setup replaces the install token when `KEYFOLD_OWNER_EMAIL` is set. The
+server then emails a 6 digit code to that address (`POST /api/v1/setup/email`):
+valid 10 minutes, used once, dropped after 5 wrong tries, one email per minute
+at most. Every request gets the same immediate empty answer: any other address
+gets no email, and a failed send is only logged (`setup email not sent`). A valid code
+(`POST /api/v1/setup/verify`) returns a setup token, sent as `X-Setup-Token`,
+that lets another device create the vault and fetch the encrypted identity to
+turn TOTP on, for 30 minutes or until TOTP is on. The server sends the email
+through `KEYFOLD_SMTP_ADDR` (`host:port`: implicit TLS on 465, STARTTLS
+required on any other port), `KEYFOLD_SMTP_USER`, `KEYFOLD_SMTP_PASSWORD` and
+`KEYFOLD_SMTP_FROM` (default: the user). The server refuses to start when
+`KEYFOLD_OWNER_EMAIL` is set without a valid SMTP address and sender.
+
 ## CLI
 
 ```sh
@@ -206,7 +219,9 @@ A new vault needs a master password of at least 16 characters in the web UI
 and in `kf init`. Anyone with a copy of the encrypted identity can try master
 passwords offline.
 The creation form asks for the install token on a non-loopback host or when
-the server rejects creation because the token is missing or incorrect.
+the server rejects creation because the token is missing or incorrect. With
+email setup on, it asks for the owner's email and the emailed code instead,
+then creates the vault and turns TOTP on from the same device.
 
 The API is versioned: every route lives under `/api/v1`. `GET /api/v1/items`
 returns an `etag` per item; `PUT /api/v1/items/{id}` with `If-Match: <etag>`
