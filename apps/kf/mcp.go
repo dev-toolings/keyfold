@@ -27,12 +27,14 @@ type listedItem struct {
 	Kind        string `json:"kind"`
 	Project     string `json:"project,omitempty"`
 	Environment string `json:"environment,omitempty"`
-	CreatedAt   string `json:"created_at"`
-	UpdatedAt   string `json:"updated_at"`
+	CreatedAt   string `json:"created_at,omitempty"` // absent from a deposit key's catalog
+	UpdatedAt   string `json:"updated_at,omitempty"`
 }
 
 type listOutput struct {
 	Items []listedItem `json:"items"`
+	// CatalogUpdatedAt is set in deposit mode: when the owner's web UI wrote the catalog.
+	CatalogUpdatedAt string `json:"catalog_updated_at,omitempty"`
 	// Unreadable holds the ids of the items that could not be decrypted, and
 	// so are not in Items.
 	Unreadable []string `json:"unreadable"`
@@ -46,6 +48,8 @@ type generateInput struct {
 type generateOutput struct {
 	Created string `json:"created"`
 	Kind    string `json:"kind"`
+	// Pending is set in deposit mode: the item waits for the owner's review.
+	Pending bool `json:"pending,omitempty"`
 }
 
 // serverHealth is GET /api/v1/health: what the server sees (ciphertext only).
@@ -128,14 +132,23 @@ func vaultHealth(ctx context.Context, base string) (healthOutput, error) {
 	return out, nil
 }
 
-func generateItem(ctx context.Context, base string, in generateInput) (generateOutput, error) {
+// checkGenerate returns the name and kind of a generate request, or why it is refused.
+func checkGenerate(in generateInput) (string, string, error) {
 	name := strings.TrimSpace(in.Name)
 	kind := cmp.Or(in.Kind, "login")
 	if name == "" {
-		return generateOutput{}, errors.New("name is empty")
+		return "", "", errors.New("name is empty")
 	}
 	if !slices.Contains(generatedKinds, kind) {
-		return generateOutput{}, fmt.Errorf("unknown kind %q (want one of %s)", kind, strings.Join(generatedKinds, ", "))
+		return "", "", fmt.Errorf("unknown kind %q (want one of %s)", kind, strings.Join(generatedKinds, ", "))
+	}
+	return name, kind, nil
+}
+
+func generateItem(ctx context.Context, base string, in generateInput) (generateOutput, error) {
+	name, kind, err := checkGenerate(in)
+	if err != nil {
+		return generateOutput{}, err
 	}
 	c := &client{base: base, ctx: ctx}
 	id, entries, err := c.open()
@@ -157,33 +170,62 @@ func generateItem(ctx context.Context, base string, in generateInput) (generateO
 	return generateOutput{Created: name, Kind: kind}, nil
 }
 
-// newMCPServer serves the four tools, or in code mode only search and
+// ops are the operations behind the tools and code mode: on the unlocked
+// vault, or with a deposit key (depositOps), which cannot read.
+type ops struct {
+	list      func(context.Context) (listOutput, error)
+	health    func(context.Context) (healthOutput, error) // nil with a deposit key
+	generate  func(context.Context, generateInput) (generateOutput, error)
+	importEnv func(context.Context, importInput) (importOutput, error)
+
+	listDescription, generateDescription, importDescription string
+	requirement                                             string // the last sentence of execute's description
+}
+
+// unlockedOps runs the tools with the identity of the unlocked agent.
+func unlockedOps(base string) ops {
+	return ops{
+		list:   func(ctx context.Context) (listOutput, error) { return listItems(ctx, base) },
+		health: func(ctx context.Context) (healthOutput, error) { return vaultHealth(ctx, base) },
+		generate: func(ctx context.Context, in generateInput) (generateOutput, error) {
+			return generateItem(ctx, base, in)
+		},
+		importEnv: func(ctx context.Context, in importInput) (importOutput, error) { return importEnv(ctx, base, in) },
+
+		listDescription: listDescription, generateDescription: generateDescription, importDescription: importDescription,
+		requirement: "The vault must be unlocked first with `kf unlock`.",
+	}
+}
+
+// newMCPServer serves the tools of o, or in code mode only search and
 // execute, which reach the same operations from a script.
-func newMCPServer(base string, codeMode bool) *mcp.Server {
+func newMCPServer(o ops, codeMode bool) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "keyfold", Version: version.Version}, nil)
 	if codeMode {
-		addCodeModeTools(s, base)
+		addCodeModeTools(s, o)
 		return s
 	}
 	readOnly := &mcp.ToolAnnotations{ReadOnlyHint: true}
-	mcp.AddTool(s, &mcp.Tool{Name: "list_items", Description: listDescription, Annotations: readOnly},
+	mcp.AddTool(s, &mcp.Tool{Name: "list_items", Description: o.listDescription, Annotations: readOnly},
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, listOutput, error) {
-			out, err := listItems(ctx, base)
+			out, err := o.list(ctx)
 			return nil, out, err
 		})
-	mcp.AddTool(s, &mcp.Tool{Name: "vault_health", Description: healthDescription, Annotations: readOnly},
-		func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, healthOutput, error) {
-			out, err := vaultHealth(ctx, base)
-			return nil, out, err
-		})
-	mcp.AddTool(s, &mcp.Tool{Name: "generate_item", Description: generateDescription},
+	if o.health != nil {
+		mcp.AddTool(s, &mcp.Tool{Name: "vault_health", Description: healthDescription, Annotations: readOnly},
+			func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, healthOutput, error) {
+				out, err := o.health(ctx)
+				return nil, out, err
+			})
+	}
+	mcp.AddTool(s, &mcp.Tool{Name: "generate_item", Description: o.generateDescription},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in generateInput) (*mcp.CallToolResult, generateOutput, error) {
-			out, err := generateItem(ctx, base, in)
+			out, err := o.generate(ctx, in)
 			return nil, out, err
 		})
-	mcp.AddTool(s, &mcp.Tool{Name: "import_env", Description: importDescription},
+	mcp.AddTool(s, &mcp.Tool{Name: "import_env", Description: o.importDescription},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in importInput) (*mcp.CallToolResult, importOutput, error) {
-			out, err := importEnv(ctx, base, in)
+			out, err := o.importEnv(ctx, in)
 			return nil, out, err
 		})
 	return s
@@ -193,11 +235,20 @@ func newMCPServer(base string, codeMode bool) *mcp.Server {
 func cmdMCP(c *client, args []string) error {
 	fs := flag.NewFlagSet("mcp", flag.ContinueOnError)
 	codeMode := fs.Bool("code-mode", false, "serve only search and execute: the agent runs JavaScript that calls the operations")
+	deposit := fs.Bool("deposit", false, "use the deposit key in $KEYFOLD_DEPOSIT_KEY: no unlock, new items wait for the owner's review, no value is ever read")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
-		return errors.New("usage: kf mcp [-code-mode]")
+		return errors.New("usage: kf mcp [-code-mode] [-deposit]")
 	}
-	return newMCPServer(c.base, *codeMode).Run(context.Background(), &mcp.StdioTransport{})
+	o := unlockedOps(c.base)
+	if *deposit {
+		k, err := depositKeyFromEnv()
+		if err != nil {
+			return err
+		}
+		o = depositOps(c.base, k)
+	}
+	return newMCPServer(o, *codeMode).Run(context.Background(), &mcp.StdioTransport{})
 }

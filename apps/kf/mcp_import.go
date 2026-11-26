@@ -214,22 +214,46 @@ func unquote(s string, q byte) (string, int, bool) {
 	return "", 0, false
 }
 
-// importEnv stores each requested variable of the source as a token item
-// named "<source>.<KEY>". It never overwrites an item: a different value is
-// reported as a conflict. A rerun after a failure finishes the work.
-func importEnv(ctx context.Context, base string, in importInput) (importOutput, error) {
+// sourceEnv is the env file of a declared source, read and parsed.
+type sourceEnv struct {
+	alias  string
+	src    importSource
+	keys   []string // the requested keys, or every key of the file
+	values map[string]string
+}
+
+// readEnv reads the env file of the source in.Source.
+func readEnv(ctx context.Context, in importInput) (sourceEnv, error) {
 	src, err := loadSource(in.Source)
 	if err != nil {
-		return importOutput{}, err
+		return sourceEnv{}, err
 	}
 	data, err := readSource(ctx, src)
 	if err != nil {
-		return importOutput{}, err
+		return sourceEnv{}, err
 	}
 	order, values := parseEnv(data)
 	keys := in.Keys
 	if len(keys) == 0 {
 		keys = order
+	}
+	return sourceEnv{alias: in.Source, src: src, keys: keys, values: values}, nil
+}
+
+// item is the token item a variable of the source becomes.
+func (e sourceEnv) item(name, value, now string) vault.Item {
+	return vault.Item{V: vault.ItemVersion, Name: name, Kind: "token", Value: value,
+		Note:    "Imported from " + e.alias + " (" + e.src.Host + ":" + e.src.Path + ")",
+		Project: e.src.Project, Environment: e.src.Environment, CreatedAt: now, UpdatedAt: now}
+}
+
+// importEnv stores each requested variable of the source as a token item
+// named "<source>.<KEY>". It never overwrites an item: a different value is
+// reported as a conflict. A rerun after a failure finishes the work.
+func importEnv(ctx context.Context, base string, in importInput) (importOutput, error) {
+	env, err := readEnv(ctx, in)
+	if err != nil {
+		return importOutput{}, err
 	}
 
 	c := &client{base: base, ctx: ctx}
@@ -244,9 +268,9 @@ func importEnv(ctx context.Context, base string, in importInput) (importOutput, 
 	now := time.Now().UTC().Format(time.RFC3339)
 	out := importOutput{Source: in.Source, Keys: []importedKey{}}
 	added := 0
-	for _, key := range keys {
+	for _, key := range env.keys {
 		r := importedKey{Key: key, Item: in.Source + "." + key}
-		value := values[key]
+		value := env.values[key]
 		existing, exists := find(entries, r.Item)
 		switch {
 		case value == "":
@@ -257,9 +281,7 @@ func importEnv(ctx context.Context, base string, in importInput) (importOutput, 
 			r.Status = "conflict"
 		default:
 			e := newEntry()
-			e.item = vault.Item{V: vault.ItemVersion, Name: r.Item, Kind: "token", Value: value,
-				Note:    "Imported from " + in.Source + " (" + src.Host + ":" + src.Path + ")",
-				Project: src.Project, Environment: src.Environment, CreatedAt: now, UpdatedAt: now}
+			e.item = env.item(r.Item, value, now)
 			if err := c.put(e, e.item, id.Recipient()); err != nil {
 				return importOutput{}, fmt.Errorf("%s: %w (%d item(s) imported before)", r.Item, err, added)
 			}

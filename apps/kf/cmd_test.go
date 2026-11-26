@@ -320,7 +320,7 @@ func TestUnreadableItemDoesNotHideTheOthers(t *testing.T) {
 	// The MCP tools say what they leave out, and refuse to create.
 	ctx := context.Background()
 	serverSide, clientSide := mcp.NewInMemoryTransports()
-	if _, err := newMCPServer(url, false).Connect(ctx, serverSide, nil); err != nil {
+	if _, err := newMCPServer(unlockedOps(url), false).Connect(ctx, serverSide, nil); err != nil {
 		t.Fatal(err)
 	}
 	session, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0"}, nil).Connect(ctx, clientSide, nil)

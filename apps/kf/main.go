@@ -66,11 +66,14 @@ commands:
   rm <name>                  delete an item
   migrate [-apply]           rewrite items in the current format (dry run
                              without -apply)
-  mcp [-code-mode]           serve the MCP tools on stdin/stdout, for AI agents
+  mcp [-code-mode] [-deposit]
+                             serve the MCP tools on stdin/stdout, for AI agents
                              (list names, generate a secret, import a declared
                              env file; never a value). -code-mode serves only
                              search and execute (JavaScript calling the same
-                             operations)
+                             operations). -deposit works without unlock, with
+                             the deposit key in $KEYFOLD_DEPOSIT_KEY: new items
+                             wait for review in the web UI
 
 The server URL defaults to $KEYFOLD_SERVER, then http://127.0.0.1:8717.
 For remote init, set $KEYFOLD_INSTALL_TOKEN to the install token from the server log.
@@ -184,7 +187,9 @@ type client struct {
 	base  string
 	ctx   context.Context // bounds the HTTP calls; nil: the client timeout only
 	token string
-	totp  string // sent once with the identity download when the server asks for it
+	// deposit is the token of a deposit key (kf mcp -deposit): it reaches the inbox only.
+	deposit string
+	totp    string // sent once with the identity download when the server asks for it
 	// unreadable holds the ids of the items open could not decrypt: a damaged
 	// file, or a format this kf does not know. They are skipped, not fatal.
 	unreadable []string
@@ -223,6 +228,9 @@ func (c *client) doWith(method, path string, hdr http.Header, in, out any) error
 	}
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	if c.deposit != "" {
+		req.Header.Set("Authorization", "Deposit "+c.deposit)
 	}
 	if c.totp != "" {
 		req.Header.Set("X-TOTP-Code", c.totp)

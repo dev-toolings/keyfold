@@ -30,11 +30,15 @@ type apiFunction struct {
 	Description string `json:"description"`
 }
 
-var codeModeAPI = []apiFunction{
-	{"kf.listItems", `kf.listItems(): {items: {name, kind, project?: string, environment?: "prod" | "preprod" | "local", created_at, updated_at}[], unreadable: string[]}`, listDescription},
-	{"kf.vaultHealth", "kf.vaultHealth(): {server: {api, items, blobs, blob_bytes, free_bytes, max_blob, totp, sessions, uptime_seconds}, vault: {stale, reused, short, weak, no_totp: string[]}, unreadable: string[]}", healthDescription},
-	{"kf.generateItem", `kf.generateItem({name: string, kind?: "login" | "token" | "ssh-passphrase"}): {created, kind}`, generateDescription},
-	{"kf.importEnv", "kf.importEnv({source: string, keys?: string[]}): {source, keys: {key, item, status}[]} // project and environment come from the declared source", importDescription},
+// api describes the functions of o that a script can call.
+func (o ops) api() []apiFunction {
+	fns := []apiFunction{{"kf.listItems", `kf.listItems(): {items: {name, kind, project?: string, environment?: "prod" | "preprod" | "local", created_at?, updated_at?}[], unreadable: string[], catalog_updated_at?: string}`, o.listDescription}}
+	if o.health != nil {
+		fns = append(fns, apiFunction{"kf.vaultHealth", "kf.vaultHealth(): {server: {api, items, blobs, blob_bytes, free_bytes, max_blob, totp, sessions, uptime_seconds}, vault: {stale, reused, short, weak, no_totp: string[]}, unreadable: string[]}", healthDescription})
+	}
+	return append(fns,
+		apiFunction{"kf.generateItem", `kf.generateItem({name: string, kind?: "login" | "token" | "ssh-passphrase"}): {created, kind, pending?: boolean}`, o.generateDescription},
+		apiFunction{"kf.importEnv", "kf.importEnv({source: string, keys?: string[]}): {source, keys: {key, item, status}[]} // project and environment come from the declared source", o.importDescription})
 }
 
 type searchInput struct {
@@ -56,28 +60,28 @@ type executeOutput struct {
 
 const executeDescription = "Run JavaScript in an isolated interpreter and return what it returns. The code is the body of an async function: `return` sends a JSON value back, `console.log` adds a line to logs. " +
 	"Globals: kf, whose functions search describes (they are synchronous; await works too), and console. An operation that fails throws an Error the script can catch. " +
-	"No file, network or process access, no require. A script stops after 30 seconds; the result and the logs are capped at 64 KiB. No function returns a secret value. The vault must be unlocked first with `kf unlock`."
+	"No file, network or process access, no require. A script stops after 30 seconds; the result and the logs are capped at 64 KiB. No function returns a secret value. "
 
-func addCodeModeTools(s *mcp.Server, base string) {
+func addCodeModeTools(s *mcp.Server, o ops) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "search",
 		Description: "Describe the functions an execute script can call on the kf object: name, TypeScript-like signature, description. Search first, then execute.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(_ context.Context, _ *mcp.CallToolRequest, in searchInput) (*mcp.CallToolResult, searchOutput, error) {
-		return nil, searchOutput{Functions: searchAPI(in.Query)}, nil
+		return nil, searchOutput{Functions: searchAPI(o, in.Query)}, nil
 	})
-	mcp.AddTool(s, &mcp.Tool{Name: "execute", Description: executeDescription},
+	mcp.AddTool(s, &mcp.Tool{Name: "execute", Description: executeDescription + o.requirement},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in executeInput) (*mcp.CallToolResult, executeOutput, error) {
-			out, err := execute(ctx, base, in.Code)
+			out, err := execute(ctx, o, in.Code)
 			return nil, out, err
 		})
 }
 
-// searchAPI returns the functions matching any word of query.
-func searchAPI(query string) []apiFunction {
+// searchAPI returns the functions of o matching any word of query.
+func searchAPI(o ops, query string) []apiFunction {
 	words := strings.Fields(strings.ToLower(query))
 	found := []apiFunction{}
-	for _, f := range codeModeAPI {
+	for _, f := range o.api() {
 		text := strings.ToLower(f.Name + " " + f.Signature + " " + f.Description)
 		if len(words) == 0 || containsAny(text, words) {
 			found = append(found, f)
@@ -96,7 +100,7 @@ func containsAny(text string, words []string) bool {
 }
 
 // execute runs code in a fresh interpreter holding the kf operations.
-func execute(ctx context.Context, base, code string) (executeOutput, error) {
+func execute(ctx context.Context, o ops, code string) (executeOutput, error) {
 	ctx, cancel := context.WithTimeout(ctx, executeTimeout)
 	defer cancel()
 	vm := goja.New()
@@ -135,10 +139,12 @@ func execute(ctx context.Context, base, code string) (executeOutput, error) {
 	kf := vm.NewObject()
 	// The operations share the script's deadline: the interpreter cannot stop
 	// a Go call, the context stops its HTTP and ssh calls.
-	kf.Set("listItems", bind(vm, ctx, func(struct{}) (any, error) { return listItems(ctx, base) }))
-	kf.Set("vaultHealth", bind(vm, ctx, func(struct{}) (any, error) { return vaultHealth(ctx, base) }))
-	kf.Set("generateItem", bind(vm, ctx, func(in generateInput) (any, error) { return generateItem(ctx, base, in) }))
-	kf.Set("importEnv", bind(vm, ctx, func(in importInput) (any, error) { return importEnv(ctx, base, in) }))
+	kf.Set("listItems", bind(vm, ctx, func(struct{}) (any, error) { return o.list(ctx) }))
+	if o.health != nil {
+		kf.Set("vaultHealth", bind(vm, ctx, func(struct{}) (any, error) { return o.health(ctx) }))
+	}
+	kf.Set("generateItem", bind(vm, ctx, func(in generateInput) (any, error) { return o.generate(ctx, in) }))
+	kf.Set("importEnv", bind(vm, ctx, func(in importInput) (any, error) { return o.importEnv(ctx, in) }))
 	vm.Set("kf", kf)
 
 	v, err := vm.RunString("(async () => {\n" + code + "\n})()")

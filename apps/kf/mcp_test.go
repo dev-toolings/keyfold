@@ -56,7 +56,7 @@ func TestMCPToolsNeverReturnValues(t *testing.T) {
 
 	ctx := context.Background()
 	serverSide, clientSide := mcp.NewInMemoryTransports()
-	if _, err := newMCPServer(ts.URL, false).Connect(ctx, serverSide, nil); err != nil {
+	if _, err := newMCPServer(unlockedOps(ts.URL), false).Connect(ctx, serverSide, nil); err != nil {
 		t.Fatal(err)
 	}
 	session, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0"}, nil).Connect(ctx, clientSide, nil)
@@ -152,7 +152,7 @@ func TestMCPImportEnv(t *testing.T) {
 
 	ctx := context.Background()
 	serverSide, clientSide := mcp.NewInMemoryTransports()
-	if _, err := newMCPServer(url, false).Connect(ctx, serverSide, nil); err != nil {
+	if _, err := newMCPServer(unlockedOps(url), false).Connect(ctx, serverSide, nil); err != nil {
 		t.Fatal(err)
 	}
 	session, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0"}, nil).Connect(ctx, clientSide, nil)
@@ -268,7 +268,7 @@ func TestMCPCodeMode(t *testing.T) {
 	}
 	ctx := context.Background()
 	serverSide, clientSide := mcp.NewInMemoryTransports()
-	if _, err := newMCPServer(url, true).Connect(ctx, serverSide, nil); err != nil {
+	if _, err := newMCPServer(unlockedOps(url), true).Connect(ctx, serverSide, nil); err != nil {
 		t.Fatal(err)
 	}
 	session, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0"}, nil).Connect(ctx, clientSide, nil)
@@ -356,7 +356,7 @@ func TestMCPCodeMode(t *testing.T) {
 	go func() { agent.Serve(l, id.String(), time.Minute); close(hungAgent) }()
 	defer func() { agent.Lock(hung.URL); <-hungAgent }()
 	start := time.Now()
-	_, err = execute(ctx, hung.URL, "return kf.listItems()")
+	_, err = execute(ctx, unlockedOps(hung.URL), "return kf.listItems()")
 	if err == nil || hits.Load() == 0 || time.Since(start) > 5*time.Second {
 		t.Errorf("a hung operation: error %v after %s", err, time.Since(start))
 	}
