@@ -69,6 +69,8 @@ const client = new WebVaultClient();
 export const isUnlocked = () => client.isUnlocked();
 export const status = () => client.status();
 export const health = () => client.health();
+export const requestSetupCode = (email: string) => client.requestSetupCode(email);
+export const verifySetupCode = (code: string) => client.verifySetupCode(code);
 export const create = (password: string, installToken?: string) => client.create(password, installToken);
 export const hasDownloadedIdentity = () => client.hasDownloadedIdentity();
 export const unlock = (password: string, code?: string) => client.unlock(password, code);

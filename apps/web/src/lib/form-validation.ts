@@ -6,6 +6,12 @@ export const totpCodeSchema = z
   .trim()
   .regex(/^[0-9]{6}$/, "Saisissez le code à 6 chiffres.");
 
+export const setupEmailSchema = z
+  .string()
+  .trim()
+  .min(1, "Saisissez l'adresse email du propriétaire.")
+  .pipe(z.email("Saisissez une adresse email valide."));
+
 const masterPasswordSchema = z.string().min(1, "Saisissez le mot de passe principal.");
 
 export const newMasterPasswordSchema = masterPasswordSchema.refine(

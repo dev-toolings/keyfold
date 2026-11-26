@@ -9,8 +9,13 @@ import { totpCodeSchema } from "@/lib/form-validation";
 import { errorMessage } from "@/lib/labels";
 import * as vault from "@/vault";
 
-/** Turns TOTP on: shows a QR code, then waits for a first valid code. Used at onboarding and in the settings. */
-export function TotpSetup({ onDone, onSkip }: { onDone: () => void; onSkip?: () => void }) {
+type TotpSetupProps = { onDone: () => void; onSkip?: () => void; onLocked?: () => void };
+
+/**
+ * Turns TOTP on: shows a QR code, then waits for a first valid code. Used at onboarding and in the settings.
+ * onLocked: the session expired on the way, so the caller can send the user back to unlocking.
+ */
+export function TotpSetup({ onDone, onSkip, onLocked }: TotpSetupProps) {
   const notify = useToast();
   const [setup, setSetup] = useState<vault.TotpSetup | null>(null);
   const [busy, setBusy] = useState(false);
@@ -21,6 +26,7 @@ export function TotpSetup({ onDone, onSkip }: { onDone: () => void; onSkip?: () 
       setSetup(await vault.totpSetup());
     } catch (err) {
       notify("error", errorMessage(err));
+      if (err instanceof vault.LockedError) onLocked?.();
     } finally {
       setBusy(false);
     }
@@ -47,10 +53,10 @@ export function TotpSetup({ onDone, onSkip }: { onDone: () => void; onSkip?: () 
     );
   }
 
-  return <ConfirmCode setup={setup} onDone={onDone} onSkip={onSkip} />;
+  return <ConfirmCode setup={setup} onDone={onDone} onSkip={onSkip} onLocked={onLocked} />;
 }
 
-function ConfirmCode({ setup, onDone, onSkip }: { setup: vault.TotpSetup; onDone: () => void; onSkip?: () => void }) {
+function ConfirmCode({ setup, onDone, onSkip, onLocked }: TotpSetupProps & { setup: vault.TotpSetup }) {
   const notify = useToast();
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
@@ -73,6 +79,7 @@ function ConfirmCode({ setup, onDone, onSkip }: { setup: vault.TotpSetup; onDone
       onDone();
     } catch (err) {
       notify("error", errorMessage(err));
+      if (err instanceof vault.LockedError) onLocked?.();
     } finally {
       setBusy(false);
     }

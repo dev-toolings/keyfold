@@ -62,7 +62,8 @@ export function selectSaveTarget(
   return target ?? entries.find((e) => e.id === editedId) ?? null;
 }
 
-export type Status = { initialized: boolean; totp: boolean };
+/** emailSetup: a code sent to the owner's email can stand in for server access during setup. */
+export type Status = { initialized: boolean; totp: boolean; emailSetup?: boolean };
 /** GET /api/v1/health: what the server sees, ciphertext only. */
 export type ServerHealth = {
   api: string;
@@ -120,6 +121,8 @@ export class VaultClient {
   private identity: string | null = null;
   private recipient: string | null = null;
   private token: string | null = null;
+  // Granted by a valid email code: lets this device create the vault and turn TOTP on.
+  private setupToken: string | null = null;
   // The encrypted identity, kept after a download that cost a TOTP code: the
   // password is checked here, after the download, so a typo must not spend the
   // code (the server refuses it twice). It is ciphertext, dropped on success.
@@ -133,6 +136,7 @@ export class VaultClient {
     const headers: Record<string, string> = { ...extra };
     const token = this.token;
     if (token) headers.Authorization = `Bearer ${token}`;
+    if (this.setupToken) headers["X-Setup-Token"] = this.setupToken;
     const res = await fetch(this.baseURL + path, { method, headers, body });
     if (res.status === 401 && token) {
       if (this.token === token) this.setSession(null);
@@ -157,6 +161,16 @@ export class VaultClient {
         throw new InstallTokenError(
           "Jeton d'installation manquant ou incorrect. Il figure dans le journal du serveur au premier démarrage.",
         );
+      }
+      if (path.startsWith("/api/v1/setup/")) {
+        if (e.error === "wrong code") throw new Error("Code incorrect.");
+        if (e.error === "no valid code, ask for a new one") {
+          throw new Error("Ce code n'est plus valable : demandez-en un nouveau.");
+        }
+      }
+      if (res.status === 403 && path === "/api/v1/init" && e.error?.includes("owner email")) {
+        this.setupToken = null;
+        throw new InstallTokenError("La vérification par email a expiré : demandez un nouveau code.");
       }
       if (res.status === 403 && e.error?.includes("TOTP")) {
         throw new Error(
@@ -191,6 +205,17 @@ export class VaultClient {
 
   health(): Promise<ServerHealth> {
     return this.api<ServerHealth>("GET", "/api/v1/health");
+  }
+
+  /** Asks the server to email a setup code to the owner. The answer is the same for any address. */
+  async requestSetupCode(email: string): Promise<void> {
+    await this.api("POST", "/api/v1/setup/email", { email });
+  }
+
+  /** Trades the emailed code for a setup token, sent with the next requests until TOTP is on. */
+  async verifySetupCode(code: string): Promise<void> {
+    const r = await this.api<{ token: string }>("POST", "/api/v1/setup/verify", { code });
+    this.setupToken = r.token;
   }
 
   /** First run: creates the identity, uploads it wrapped, then unlocks. */
@@ -274,6 +299,7 @@ export class VaultClient {
 
   async totpEnable(code: string): Promise<void> {
     await this.api("POST", "/api/v1/totp/enable", { code });
+    this.setupToken = null;
   }
 
   async totpDisable(code: string): Promise<void> {

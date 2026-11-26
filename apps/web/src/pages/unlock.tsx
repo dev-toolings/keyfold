@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowRight, Check, KeyRound, LoaderCircle, ShieldCheck, Terminal } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, KeyRound, LoaderCircle, Mail, ShieldCheck, Terminal } from "lucide-react";
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { type Location, Navigate, useLocation, useNavigate } from "react-router";
 import { z } from "zod";
@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PasswordInput } from "@/components/ui/password-input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { createVaultSchema, unlockVaultSchema } from "@/lib/form-validation";
+import { createVaultSchema, setupEmailSchema, totpCodeSchema, unlockVaultSchema } from "@/lib/form-validation";
 import { errorMessage } from "@/lib/labels";
 import * as vault from "@/vault";
 import "./unlock.css";
@@ -56,6 +56,7 @@ export function UnlockPage() {
     () => !vault.isLoopbackHost(window.location.hostname),
   );
   const [useInstallToken, setUseInstallToken] = useState(false);
+  const [emailVerified, setEmailVerified] = useState(false);
   const [error, setError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -82,18 +83,24 @@ export function UnlockPage() {
   const first = status?.initialized === false;
   const completeFromServer =
     !requiresServerAccess && !status?.totp && new URLSearchParams(location.search).get("setup") === "totp";
-  const showServerGuide = !!status && requiresServerAccess && (first ? !useInstallToken : !status.totp);
+  // A reload during the TOTP step of a remote setup keeps the session: finish the step first.
+  const resumeTotp = !!status && requiresServerAccess && !status.totp && vault.isUnlocked();
+  const showTotp = offerTotp || resumeTotp;
+  const setupOpen = !!status && requiresServerAccess && (first || !status.totp);
+  const emailSetup = !!status?.emailSetup;
+  const showEmailGuide = setupOpen && emailSetup && !emailVerified;
+  const showServerGuide = setupOpen && !emailSetup && (first ? !useInstallToken : true);
   const setupSteps = requiresServerAccess
-    ? ["Accéder au serveur", "Créer le coffre", "Protéger l’accès"]
+    ? [emailSetup ? "Vérifier votre email" : "Accéder au serveur", "Créer le coffre", "Protéger l’accès"]
     : ["Créer le coffre", "Protéger l’accès"];
   const setupStep =
-    offerTotp || (!first && (showServerGuide || completeFromServer))
+    showTotp || (!first && !showEmailGuide && (showServerGuide || completeFromServer || emailVerified))
       ? setupSteps.length - 1
-      : showServerGuide
+      : showEmailGuide || showServerGuide
         ? 0
         : setupSteps.length - 2;
-  const showSetup = !!status && (offerTotp || first || showServerGuide || completeFromServer);
-  const screen = status && `${first}/${showServerGuide}/${offerTotp}`;
+  const showSetup = !!status && (showTotp || first || showServerGuide || showEmailGuide || completeFromServer);
+  const screen = status && `${first}/${showServerGuide}/${showEmailGuide}/${showTotp}`;
   const previousScreen = useRef(screen);
   useEffect(() => {
     if (previousScreen.current && previousScreen.current !== screen) {
@@ -102,7 +109,9 @@ export function UnlockPage() {
     previousScreen.current = screen;
   }, [screen]);
 
-  if (vault.isUnlocked() && !offerTotp) return <Navigate to={target} replace />;
+  // Remote and unlocked: wait for the status, which tells whether TOTP still needs turning on.
+  const waitForStatus = requiresServerAccess && !status;
+  if (vault.isUnlocked() && !showTotp && !waitForStatus) return <Navigate to={target} replace />;
 
   return (
     <main className="unlock-layout min-h-svh bg-background">
@@ -124,14 +133,26 @@ export function UnlockPage() {
             </p>
           )}
 
-          {offerTotp ? (
+          {showTotp ? (
             <section className="grid gap-5">
               <header className="unlock-heading">
                 <h1 tabIndex={-1}>Protégez l’accès au coffre</h1>
                 <p>Activez la double authentification pour ouvrir le coffre depuis un autre appareil.</p>
               </header>
-              <TotpSetup onDone={done} onSkip={completeFromServer ? undefined : done} />
+              <TotpSetup
+                onDone={done}
+                onSkip={completeFromServer || emailVerified || resumeTotp ? undefined : done}
+                onLocked={() => {
+                  // Forget the old status: create or unlock is chosen from a fresh one.
+                  setStatus(null);
+                  setOfferTotp(false);
+                  setEmailVerified(false);
+                  void refreshStatus();
+                }}
+              />
             </section>
+          ) : showEmailGuide ? (
+            <EmailSetupGuide first={first} onVerified={() => setEmailVerified(true)} />
           ) : status ? (
             <PasswordForm
               first={first}
@@ -142,8 +163,11 @@ export function UnlockPage() {
               statusError={error}
               onUseInstallToken={() => setUseInstallToken(true)}
               onUseServerAccess={() => setUseInstallToken(false)}
-              onInstallTokenRequired={() => setRequiresServerAccess(true)}
-              onDone={() => (first || completeFromServer ? setOfferTotp(true) : done())}
+              onInstallTokenRequired={() => {
+                setRequiresServerAccess(true);
+                setEmailVerified(false);
+              }}
+              onDone={() => (first || completeFromServer || emailVerified ? setOfferTotp(true) : done())}
               refreshStatus={refreshStatus}
             />
           ) : error ? (
@@ -224,6 +248,149 @@ export function UnlockPage() {
         </div>
       </aside>
     </main>
+  );
+}
+
+/** Proves ownership with a code sent to the owner's email, instead of server access. */
+function EmailSetupGuide({ first, onVerified }: { first: boolean; onVerified: () => void }) {
+  const [email, setEmail] = useState("");
+  const [code, setCode] = useState("");
+  const [sent, setSent] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [showFieldErrors, setShowFieldErrors] = useState(false);
+  const emailCheck = setupEmailSchema.safeParse(email);
+  const codeCheck = totpCodeSchema.safeParse(code);
+  const emailError = showFieldErrors && !sent && !emailCheck.success ? emailCheck.error.issues[0]?.message : undefined;
+  const codeError = showFieldErrors && sent && !codeCheck.success ? codeCheck.error.issues[0]?.message : undefined;
+
+  async function run(form: HTMLFormElement, valid: boolean, action: () => Promise<void>) {
+    setError("");
+    if (!valid) {
+      setShowFieldErrors(true);
+      focusFirstInvalidField(form);
+      return;
+    }
+    setShowFieldErrors(false);
+    setBusy(true);
+    try {
+      await action();
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function sendCode(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    void run(e.currentTarget, emailCheck.success, async () => {
+      if (emailCheck.success) await vault.requestSetupCode(emailCheck.data);
+      setCode("");
+      setSent(true);
+    });
+  }
+
+  function checkCode(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    void run(e.currentTarget, codeCheck.success, async () => {
+      if (codeCheck.success) await vault.verifySetupCode(codeCheck.data);
+      onVerified();
+    });
+  }
+
+  return (
+    <section className="grid min-w-0 gap-5">
+      <header className="unlock-heading">
+        <h1 tabIndex={-1}>Vérifiez votre email</h1>
+        <p>
+          {first
+            ? "Un code envoyé à l’adresse du propriétaire autorise la création du coffre depuis cet appareil."
+            : "Un code envoyé à l’adresse du propriétaire autorise l’activation de la double authentification depuis cet appareil."}
+        </p>
+      </header>
+      {sent ? (
+        <form noValidate onSubmit={checkCode} className="flex flex-col gap-4">
+          <p role="status" className="flex items-start gap-2.5 text-sm/6 text-muted-foreground">
+            <Mail aria-hidden="true" className="mt-1 size-4 shrink-0" />
+            <span className="min-w-0 [overflow-wrap:anywhere]">
+              Si {email.trim()} est l’adresse du propriétaire, un code vient d’y être envoyé. Il expire dans 10 minutes.
+            </span>
+          </p>
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="setup-code" isRequired>
+              Code reçu par email
+            </Label>
+            <Input
+              id="setup-code"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              maxLength={6}
+              aria-required="true"
+              aria-invalid={!!codeError}
+              aria-describedby={codeError ? "setup-code-error" : undefined}
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              className="font-mono tracking-[0.3em]"
+            />
+            <FieldError id="setup-code" error={codeError} />
+          </div>
+          {error && (
+            <p role="alert" className="text-sm text-destructive">
+              {error}
+            </p>
+          )}
+          <Button type="submit" size="sm" disabled={busy} className="self-end">
+            {busy && <LoaderCircle aria-hidden="true" className="animate-spin" />}
+            {busy ? "Vérification…" : "Valider le code"}
+            {!busy && <ArrowRight aria-hidden="true" />}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={busy}
+            className="self-start"
+            onClick={() => {
+              setError("");
+              setSent(false);
+            }}
+          >
+            <ArrowLeft aria-hidden="true" /> Changer d’adresse ou renvoyer un code
+          </Button>
+        </form>
+      ) : (
+        <form noValidate onSubmit={sendCode} className="flex flex-col gap-4">
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="setup-email" isRequired>
+              Email du propriétaire
+            </Label>
+            <Input
+              id="setup-email"
+              type="email"
+              autoComplete="email"
+              spellCheck={false}
+              aria-required="true"
+              aria-invalid={!!emailError}
+              aria-describedby={emailError ? "setup-email-error" : undefined}
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+            <FieldError id="setup-email" error={emailError} />
+          </div>
+          {error && (
+            <p role="alert" className="text-sm text-destructive">
+              {error}
+            </p>
+          )}
+          <Button type="submit" size="sm" disabled={busy} className="self-end">
+            {busy && <LoaderCircle aria-hidden="true" className="animate-spin" />}
+            {busy ? "Envoi…" : "Recevoir un code"}
+            {!busy && <ArrowRight aria-hidden="true" />}
+          </Button>
+        </form>
+      )}
+    </section>
   );
 }
 
