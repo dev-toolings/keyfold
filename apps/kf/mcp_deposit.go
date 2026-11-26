@@ -107,8 +107,9 @@ const (
 	depositListDescription = "List the items of the Keyfold vault from the catalog of this deposit key: name, kind, optional project and environment (no dates). catalog_updated_at is when the owner's web UI last wrote it (the vault opened, or an item changed there): deposits appear after the owner accepts them. Never returns a value. Works without unlocking the vault."
 
 	depositGenerateDescription = "Deposit a new vault item holding a freshly generated random secret. The value is generated and encrypted locally for the vault and is never returned; this key cannot read it back. " +
+		"Fails if the catalog lists the name. If the catalog cannot be read, the deposit proceeds. " +
 		"The item waits for review: once the owner opens the vault in the web UI, a new name is added, a name already taken waits for the owner's choice. Then read it with `kf get <name>` or in the web UI. " +
-		"Fails if the catalog already lists the name. Works without unlocking the vault."
+		"Works without unlocking the vault."
 
 	depositImportDescription = "Deposit variables of a remote env file for the vault, as token items named \"<source>.<KEY>\". source is an alias the user declared in ~/.config/keyfold/sources.json (host, absolute path, sudo); the tool cannot read any other host or file. The source can set optional project and environment fields. kf reads the file over ssh and encrypts the values locally for the vault: the result holds names and a status per key only (deposited, already deposited: the same value was deposited before with this key, missing: absent or empty in the file). " +
 		"Empty keys deposits every variable of the file. Once the owner opens the vault in the web UI, new names are added, values equal to the stored ones are dropped and the others wait for the owner's choice. Works without unlocking the vault."
