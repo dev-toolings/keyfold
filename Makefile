@@ -42,9 +42,29 @@ site-dev: ## Start the public product site dev server (apps/site, Next.js)
 
 # ─── Build ────────────────────────────────────────────────────────────────────
 
-VERSION ?= $(shell git describe --tags --exact-match --match 'v*' HEAD 2>/dev/null || printf '%s\n' dev)
-COMMIT  ?= $(shell git rev-parse --short=7 HEAD 2>/dev/null)
+COMMIT ?= $(shell git rev-parse --short=7 HEAD 2>/dev/null)
 
+ifeq ($(origin VERSION),undefined)
+VERSION := $(shell git describe --tags --exact-match --match 'v*' HEAD 2>/dev/null || printf '%s\n' dev)
+else
+# Keep overrides literal before make can expand them in a recipe or export.
+override VERSION := $(value VERSION)
+endif
+
+override define version_newline
+
+
+endef
+
+# Reject newlines before make passes the validation command to the shell.
+override version_valid := $(if $(findstring $(version_newline),$(VERSION)),,$(shell LC_ALL=C; export LC_ALL; \
+	case '$(subst ','"'"',$(VERSION))' in \
+		(dev) printf yes ;; \
+		(*[!A-Za-z0-9.+-]*|v) ;; \
+		(v*) printf yes ;; \
+	esac))
+
+ifeq ($(version_valid),yes)
 build: ## Build the kf and keyfold-server binaries into bin/
 	@ldflags="-X keyfold/internal/version.Version=$(VERSION) -X keyfold/internal/version.Commit=$(COMMIT)"; \
 		go build -ldflags "$$ldflags" -o bin/kf ./apps/kf && \
@@ -55,6 +75,10 @@ image: ## Build the vault container image tagged keyfold:$(VERSION)
 	@docker build --file packaging/Dockerfile --build-arg VERSION="$(VERSION)" \
 		--build-arg COMMIT="$(COMMIT)" --tag "keyfold:$(VERSION)" .
 	@printf "$(C_OK)[make] built image %s$(C_RESET)\n" "keyfold:$(VERSION)"
+else
+build image:
+	@printf "$(C_ERR)[make] invalid VERSION: expected dev or v followed by letters, digits, dots, hyphens or plus signs$(C_RESET)\n"; exit 1
+endif
 
 web-build: ## Build the web UI into apps/web/dist
 	@cd apps/web && bun run build
