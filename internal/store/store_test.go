@@ -501,3 +501,45 @@ func TestBackupDoesNotWaitOnANamedPipe(t *testing.T) {
 		t.Fatal("Backup waits for a writer on a named pipe")
 	}
 }
+
+func TestBackupKeepsDeposits(t *testing.T) {
+	src := t.TempDir()
+	st, err := Open(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Init([]byte("age-encryption.org/v1\nfake identity"), "fake-recipient"); err != nil {
+		t.Fatal(err)
+	}
+	key := DepositKey{ID: strings.Repeat("a", 32), Name: "agent", TokenHash: "fake-hash", Recipient: "fake-recipient"}
+	if err := st.AddDepositKey(key); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.PutDeposit(key.ID, strings.Repeat("b", 32), []byte("fake deposit")); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutCatalog(key.ID, []byte("fake catalog")); err != nil {
+		t.Fatal(err)
+	}
+	var archive bytes.Buffer
+	if err := Backup(src, &archive); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(t.TempDir(), "restored")
+	if err := Restore(dst, &archive); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := Open(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys, _ := restored.DepositKeys()
+	deposits, _ := restored.Deposits()
+	if before, _ := st.Deposits(); len(deposits) == 1 && !deposits[0].Created.Equal(before[0].Created) {
+		t.Errorf("restored deposit dated %s, archived %s: deposits are taken in arrival order", deposits[0].Created, before[0].Created)
+	}
+	catalog, _, err := restored.Catalog(key.ID)
+	if len(keys) != 1 || len(deposits) != 1 || string(catalog) != "fake catalog" || err != nil {
+		t.Fatalf("restored %d key(s), %d deposit(s), catalog %q (%v)", len(keys), len(deposits), catalog, err)
+	}
+}

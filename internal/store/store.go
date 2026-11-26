@@ -66,7 +66,7 @@ func ETag(ciphertext []byte) string {
 // written by a newer layout than this code knows. A directory without a
 // version file predates it and is layout 1: Lock writes the file.
 func Open(dir string) (*Store, error) {
-	for _, d := range []string{dir, filepath.Join(dir, itemsDir), filepath.Join(dir, blobsDir)} {
+	for _, d := range []string{dir, filepath.Join(dir, itemsDir), filepath.Join(dir, blobsDir), filepath.Join(dir, depositsDir)} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return nil, err
 		}
@@ -260,6 +260,22 @@ func (s *Store) Put(id string, ciphertext []byte, ifMatch string) error {
 		if ETag(current) != ifMatch {
 			return ErrConflict
 		}
+	}
+	return writeAtomic(s.itemPath(id), bytes.NewReader(ciphertext))
+}
+
+// Create writes an item that must not exist yet, or returns ErrConflict and
+// writes nothing.
+func (s *Store) Create(id string, ciphertext []byte) error {
+	if !ValidID(id) {
+		return errors.New("invalid item id")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := os.Lstat(s.itemPath(id)); err == nil {
+		return ErrConflict
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
 	return writeAtomic(s.itemPath(id), bytes.NewReader(ciphertext))
 }

@@ -27,7 +27,7 @@ func OpenOffline(dir string) (*Store, error) {
 		}
 		for _, entry := range entries {
 			switch entry.Name() {
-			case itemsDir, blobsDir:
+			case itemsDir, blobsDir, depositsDir:
 				if entry.IsDir() {
 					continue
 				}
@@ -89,7 +89,7 @@ func (s *Store) SeedReady() error {
 			return err
 		}
 	}
-	for _, name := range []string{itemsDir, blobsDir} {
+	for _, name := range []string{itemsDir, blobsDir, depositsDir} {
 		files, err := os.ReadDir(filepath.Join(s.dir, name))
 		if err != nil {
 			return err
@@ -111,7 +111,7 @@ func (s *Store) Reset() error {
 		return err
 	}
 	// A server calls Open before trying to lock. Keep the directories it opened.
-	for _, name := range []string{itemsDir, blobsDir} {
+	for _, name := range []string{itemsDir, blobsDir, depositsDir} {
 		dir := filepath.Join(s.dir, name)
 		entries, err := os.ReadDir(dir)
 		if err != nil {

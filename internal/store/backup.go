@@ -20,7 +20,7 @@ const endEntry = "complete"
 
 // archiveName matches the files of a vault, the only entries a backup holds
 // and the only ones a restore writes.
-var archiveName = regexp.MustCompile(`^(version|recipient\.txt|identity\.age|totp\.json|(items|blobs)/[0-9a-f]{32}\.age)$`)
+var archiveName = regexp.MustCompile(`^(version|recipient\.txt|identity\.age|totp\.json|(items|blobs)/[0-9a-f]{32}\.age|deposits/keys\.json|deposits/[0-9a-f]{32}\.([0-9a-f]{32}|catalog)\.age)$`)
 
 // Backup writes every file of the vault in dir to w, as a tar archive. It
 // takes no lock and works next to a running server: a file is replaced by a
@@ -53,7 +53,10 @@ func Backup(dir string, w io.Writer) error {
 	if err := add(versionFile, recipientFile, identityFile, totpFile); err != nil {
 		return err
 	}
-	for _, sub := range []string{itemsDir, blobsDir} {
+	// Deposits go before the items: the owner's client stores a deposit as an
+	// item, then deletes the deposit, so one moved during the backup is either
+	// still a deposit here or already an item listed below.
+	for _, sub := range []string{depositsDir, itemsDir, blobsDir} {
 		found, err := filepath.Glob(filepath.Join(dir, sub, "*.age"))
 		if err != nil {
 			return err
@@ -65,6 +68,11 @@ func Backup(dir string, w io.Writer) error {
 				}
 			}
 		}
+	}
+	// The deposit keys go last: every archived deposit then has its key, unless
+	// it was revoked during the backup (its deposit is then never listed).
+	if err := add(depositsDir + "/" + depositKeysFile); err != nil {
+		return err
 	}
 	count := strconv.Itoa(files)
 	if err := tw.WriteHeader(&tar.Header{Name: endEntry, Mode: 0o600, Size: int64(len(count))}); err != nil {
@@ -97,7 +105,9 @@ func addFile(tw *tar.Writer, dir, name string) (bool, error) {
 	if !info.Mode().IsRegular() {
 		return false, fmt.Errorf("%s is not a regular file", name)
 	}
-	if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o600, Size: info.Size(), ModTime: info.ModTime()}); err != nil {
+	// PAX keeps the date to the nanosecond: a restore keeps the arrival order of deposits.
+	h := &tar.Header{Name: name, Mode: 0o600, Size: info.Size(), ModTime: info.ModTime(), Format: tar.FormatPAX}
+	if err := tw.WriteHeader(h); err != nil {
 		return false, err
 	}
 	_, err = io.Copy(tw, f)
@@ -119,7 +129,7 @@ func Restore(dir string, r io.Reader) error {
 		return err
 	}
 	defer os.RemoveAll(tmp) // no-op after the rename
-	for _, sub := range []string{itemsDir, blobsDir} {
+	for _, sub := range []string{itemsDir, blobsDir, depositsDir} {
 		if err := os.Mkdir(filepath.Join(tmp, sub), 0o700); err != nil {
 			return err
 		}
@@ -145,8 +155,15 @@ func Restore(dir string, r io.Reader) error {
 			complete = true
 			continue
 		}
-		if err := writeAtomic(filepath.Join(tmp, filepath.FromSlash(h.Name)), tr); err != nil {
+		path := filepath.Join(tmp, filepath.FromSlash(h.Name))
+		if err := writeAtomic(path, tr); err != nil {
 			return err
+		}
+		// Deposits are taken in the order they arrived, read from this date.
+		if !h.ModTime.IsZero() {
+			if err := os.Chtimes(path, h.ModTime, h.ModTime); err != nil {
+				return err
+			}
 		}
 		files++
 	}

@@ -197,6 +197,14 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/totp/setup", s.auth(s.totpSetup))
 	mux.HandleFunc("POST /api/v1/totp/enable", s.auth(s.totpEnable))
 	mux.HandleFunc("POST /api/v1/totp/disable", s.auth(s.totpDisable))
+	mux.HandleFunc("GET /api/v1/deposit-keys", s.auth(s.listDepositKeys))
+	mux.HandleFunc("POST /api/v1/deposit-keys", s.auth(s.createDepositKey))
+	mux.HandleFunc("DELETE /api/v1/deposit-keys/{id}", s.auth(s.deleteDepositKey))
+	mux.HandleFunc("PUT /api/v1/deposit-keys/{id}/catalog", s.auth(s.putCatalog))
+	mux.HandleFunc("GET /api/v1/deposits", s.auth(s.listDeposits))
+	mux.HandleFunc("DELETE /api/v1/deposits/{key}/{id}", s.auth(s.deleteDeposit))
+	mux.HandleFunc("POST /api/v1/inbox", s.limitCalls(s.depositAuth(s.inboxPut)))
+	mux.HandleFunc("GET /api/v1/inbox/catalog", s.limitCalls(s.depositAuth(s.inboxCatalog)))
 	if s.web != nil {
 		mux.Handle("/api/", http.NotFoundHandler()) // an unknown API path is not a page of the UI
 		mux.Handle("/", s.web)
@@ -295,8 +303,11 @@ func secure(next http.Handler) http.Handler {
 func (s *server) limitBody(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := int64(maxBody)
-		if strings.HasPrefix(r.URL.Path, "/api/v1/blobs/") {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/api/v1/blobs/"):
 			n = s.maxBlob
+		case r.URL.Path == "/api/v1/inbox":
+			n = inboxBody
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, n)
 		next.ServeHTTP(w, r)
@@ -840,8 +851,15 @@ func (s *server) putItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// If-Match carries the ETag the client read: a write over a newer
-	// version fails instead of overwriting it in silence.
-	if err := s.store.Put(id, req.Ciphertext, strings.Trim(r.Header.Get("If-Match"), `"`)); errors.Is(err, store.ErrConflict) {
+	// version fails instead of overwriting it in silence. "If-None-Match: *"
+	// creates the item only if the id is free.
+	var err error
+	if r.Header.Get("If-None-Match") == "*" {
+		err = s.store.Create(id, req.Ciphertext)
+	} else {
+		err = s.store.Put(id, req.Ciphertext, strings.Trim(r.Header.Get("If-Match"), `"`))
+	}
+	if errors.Is(err, store.ErrConflict) {
 		fail(w, http.StatusPreconditionFailed, "item changed since it was read")
 		return
 	} else if err != nil {
