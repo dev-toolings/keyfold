@@ -500,33 +500,36 @@ const mcp: DocPage = {
       nav: "MCP",
       title: "MCP server: a secrets vault for AI agents | Keyfold",
       description:
-        "kf mcp gives an AI agent four tools: list items, create a generated secret, import a declared env file, report vault health. No tool returns a secret value, and none edits or deletes.",
+        "kf mcp gives an AI agent two tools, search and execute: its JavaScript lists items, creates a generated secret, imports a declared env file and reports vault health. No function returns a secret value, and none edits or deletes.",
       h1: "MCP server for AI agents",
-      lede: "`kf mcp` is a Model Context Protocol server built into the Keyfold command line. An AI agent can list the vault, create a generated secret, import an env file you declared and read the vault's health, and no tool ever returns a secret value.",
+      lede: "`kf mcp` is a Model Context Protocol server built into the Keyfold command line. An AI agent can list the vault, create a generated secret, import an env file you declared and read the vault's health, and nothing it calls ever returns a secret value.",
       sections: [
         {
           id: "tools",
           title: "Which tools does the MCP server expose?",
           blocks: [
             {
+              p: "Two tools, with or without a deposit key: `search` describes the functions of a `kf` object, and `execute` runs JavaScript that calls them, so one call can chain several operations and return only what the agent needs. The interpreter sees `kf` and `console.log` only: no file, network or process access, 30 seconds and 64 KiB at most. The functions:",
+            },
+            {
               table: {
-                head: ["Tool", "What it returns or does"],
+                head: ["Function", "What it returns or does"],
                 rows: [
                   [
-                    "`list_items`",
-                    "The name, kind, optional project and environment, and creation and last modification dates of each item.",
+                    "`kf.listItems()`",
+                    "The name, kind, optional project and environment, and creation and last modification dates of each item. With a deposit key: the same without dates, from a catalog the web UI writes for the key.",
                   ],
                   [
-                    "`generate_item`",
-                    "Creates an item holding a random secret, generated and encrypted locally. It refuses a name that already exists.",
+                    "`kf.generateItem({name, kind})`",
+                    "Creates an item holding a random secret, generated and encrypted locally. It refuses a name that already exists. With a deposit key, it refuses a name of the catalog, and the item is deposited: a new name enters the vault when you open it in the web UI, a taken one waits for your choice.",
                   ],
                   [
-                    "`import_env`",
-                    "Copies variables of a remote env file into items named `<source>.<KEY>`. Declare the source in `~/.config/keyfold/sources.json` and set optional `project` and `environment` fields for new items. Allowed environments are `prod`, `preprod`, and `local`. Items with an environment use encrypted format v5. kf reads the file over ssh, encrypts the values locally, and returns a status per key only. It never overwrites an item.",
+                    "`kf.importEnv({source, keys})`",
+                    "Copies variables of a remote env file into items named `<source>.<KEY>`. Declare the source in `~/.config/keyfold/sources.json` and set optional `project` and `environment` fields for new items. Allowed environments are `prod`, `preprod`, and `local`. Items with an environment use encrypted format v5. kf reads the file over ssh, encrypts the values locally, and returns a status per key only. It never overwrites an item. With a deposit key, the items are deposited: a new name enters the vault when you open it in the web UI, a name that holds another value waits for your choice.",
                   ],
                   [
-                    "`vault_health`",
-                    "What the server stores (item and attachment counts, sizes, free disk space, TOTP, open sessions) and the dashboard indicators as item names: stale, reused, short, weak, website without TOTP.",
+                    "`kf.vaultHealth()`",
+                    "Unlocked vault only. What the server stores (item and attachment counts, sizes, free disk space, TOTP, open sessions) and the dashboard indicators as item names: stale, reused, short, weak, website without TOTP.",
                   ],
                 ],
               },
@@ -538,7 +541,7 @@ const mcp: DocPage = {
           title: "Why can an agent use it without seeing a secret?",
           blocks: [
             {
-              p: "Whatever a tool returns enters the model's conversation and its transcripts. So no tool returns a value or a note, and none edits or deletes an item.",
+              p: "Whatever a script returns enters the model's conversation and its transcripts. So no function returns a value or a note, and none edits or deletes an item.",
             },
             {
               p: "The health rules are the same as the web dashboard's: they exist in Go and in TypeScript, and both test suites check the same cases.",
@@ -550,14 +553,11 @@ const mcp: DocPage = {
           title: "How do I connect it to an agent?",
           blocks: [
             {
-              p: "`kf mcp` serves its tools on stdin and stdout. It uses the local agent, so run `kf unlock` first. To register it in Claude Code, from the repository, after `make build`:",
+              p: "`kf mcp` serves `search` and `execute` on stdin and stdout. It uses the local agent, so run `kf unlock` first. To register it in Claude Code, from the repository, after `make build`:",
             },
             { code: 'claude mcp add keyfold -- "$PWD/bin/kf" mcp' },
             {
-              p: "Code mode: `kf mcp -code-mode` serves two tools instead of four. `search` describes the functions of a `kf` object (the same operations as the tools), and `execute` runs JavaScript that calls them, so one call can chain several operations and return only what the agent needs. The interpreter sees `kf` and `console.log` only: no file, network or process access, 30 seconds and 64 KiB at most.",
-            },
-            {
-              p: "Deposit mode: `kf mcp -deposit` uses a deposit key created on the AI page of the web UI instead of the unlocked vault. `generate_item` and `import_env` encrypt new items for the vault's public key and deposit them; `list_items` reads a catalog of names the web UI writes for the key. No unlock, and the key cannot read any value. Deposits stay outside the vault until you open it in the web UI: a new name is added, a name that holds another value waits for your choice (replace, keep both, refuse).",
+              p: "Deposit mode: `kf mcp -deposit` serves the same two tools with a deposit key created on the AI page of the web UI instead of the unlocked vault. `kf.generateItem` and `kf.importEnv` encrypt new items for the vault's public key and deposit them; `kf.listItems` reads a catalog of names the web UI writes for the key; `kf.vaultHealth` does not exist. No unlock, and the key cannot read any value. Deposits stay outside the vault until you open it in the web UI: a new name is added, a name that holds another value waits for your choice (replace, keep both, refuse).",
             },
           ],
         },
@@ -578,33 +578,36 @@ const mcp: DocPage = {
       nav: "MCP",
       title: "Serveur MCP : un coffre de secrets pour agents IA | Keyfold",
       description:
-        "kf mcp donne quatre outils à un agent IA : lister, créer un secret généré, importer un fichier env déclaré, lire l'état du coffre. Aucun outil ne renvoie de valeur ni ne modifie rien.",
+        "kf mcp donne deux outils à un agent IA, search et execute : son JavaScript liste le coffre, crée un secret généré, importe un fichier env déclaré et lit l'état du coffre. Aucune fonction ne renvoie de valeur ni ne modifie rien.",
       h1: "Serveur MCP pour agents IA",
-      lede: "`kf mcp` est un serveur Model Context Protocol intégré à la ligne de commande de Keyfold. Un agent IA peut lister le coffre, créer un secret généré, importer un fichier env que vous avez déclaré et lire l'état du coffre, et aucun outil ne renvoie jamais la valeur d'un secret.",
+      lede: "`kf mcp` est un serveur Model Context Protocol intégré à la ligne de commande de Keyfold. Un agent IA peut lister le coffre, créer un secret généré, importer un fichier env que vous avez déclaré et lire l'état du coffre, et rien de ce qu'il appelle ne renvoie jamais la valeur d'un secret.",
       sections: [
         {
           id: "outils",
           title: "Quels outils le serveur MCP expose-t-il ?",
           blocks: [
             {
+              p: "Deux outils, avec ou sans clé de dépôt : `search` décrit les fonctions d'un objet `kf`, et `execute` exécute du JavaScript qui les appelle : un seul appel enchaîne plusieurs opérations et ne renvoie que ce dont l'agent a besoin. L'interpréteur ne voit que `kf` et `console.log` : ni fichier, ni réseau, ni processus, 30 secondes et 64 Kio au plus. Les fonctions :",
+            },
+            {
               table: {
-                head: ["Outil", "Ce qu'il renvoie ou fait"],
+                head: ["Fonction", "Ce qu'elle renvoie ou fait"],
                 rows: [
                   [
-                    "`list_items`",
-                    "Le nom, le type, le projet et l'environnement s'ils sont renseignés, ainsi que les dates de création et de dernière modification de chaque élément.",
+                    "`kf.listItems()`",
+                    "Le nom, le type, le projet et l'environnement s'ils sont renseignés, ainsi que les dates de création et de dernière modification de chaque élément. Avec une clé de dépôt : la même chose sans les dates, depuis un catalogue que l'interface web écrit pour la clé.",
                   ],
                   [
-                    "`generate_item`",
-                    "Crée un élément contenant un secret aléatoire, généré et chiffré en local. Il refuse un nom déjà pris.",
+                    "`kf.generateItem({name, kind})`",
+                    "Crée un élément contenant un secret aléatoire, généré et chiffré en local. Elle refuse un nom déjà pris. Avec une clé de dépôt, elle refuse un nom du catalogue, et l'élément est déposé : un nouveau nom entre dans le coffre quand vous l'ouvrez dans l'interface web, un nom déjà pris attend votre choix.",
                   ],
                   [
-                    "`import_env`",
-                    "Copie les variables d'un fichier env distant dans des éléments nommés `<source>.<KEY>`. Déclarez la source dans `~/.config/keyfold/sources.json` et renseignez les champs facultatifs `project` et `environment` pour les nouveaux éléments. Les environnements autorisés sont `prod`, `preprod` et `local`. Les éléments avec un environnement utilisent le format chiffré v5. kf lit le fichier par ssh, chiffre les valeurs en local et ne renvoie qu'un statut par clé. Il n'écrase jamais un élément.",
+                    "`kf.importEnv({source, keys})`",
+                    "Copie les variables d'un fichier env distant dans des éléments nommés `<source>.<KEY>`. Déclarez la source dans `~/.config/keyfold/sources.json` et renseignez les champs facultatifs `project` et `environment` pour les nouveaux éléments. Les environnements autorisés sont `prod`, `preprod` et `local`. Les éléments avec un environnement utilisent le format chiffré v5. kf lit le fichier par ssh, chiffre les valeurs en local et ne renvoie qu'un statut par clé. Elle n'écrase jamais un élément. Avec une clé de dépôt, les éléments sont déposés : un nouveau nom entre dans le coffre quand vous l'ouvrez dans l'interface web, un nom qui porte une autre valeur attend votre choix.",
                   ],
                   [
-                    "`vault_health`",
-                    "Ce que le serveur stocke (nombre d'éléments et de pièces jointes, tailles, espace disque libre, TOTP, sessions ouvertes) et les indicateurs du tableau de bord, sous forme de noms d'éléments : à renouveler, réutilisé, court, faible, site sans TOTP.",
+                    "`kf.vaultHealth()`",
+                    "Coffre déverrouillé seulement. Ce que le serveur stocke (nombre d'éléments et de pièces jointes, tailles, espace disque libre, TOTP, sessions ouvertes) et les indicateurs du tableau de bord, sous forme de noms d'éléments : à renouveler, réutilisé, court, faible, site sans TOTP.",
                   ],
                 ],
               },
@@ -616,7 +619,7 @@ const mcp: DocPage = {
           title: "Pourquoi un agent peut-il s'en servir sans voir de secret ?",
           blocks: [
             {
-              p: "Tout ce qu'un outil renvoie entre dans la conversation du modèle et dans ses transcriptions. Aucun outil ne renvoie donc de valeur ni de note, et aucun ne modifie ni ne supprime d'élément.",
+              p: "Tout ce qu'un script renvoie entre dans la conversation du modèle et dans ses transcriptions. Aucune fonction ne renvoie donc de valeur ni de note, et aucune ne modifie ni ne supprime d'élément.",
             },
             {
               p: "Les règles de l'état du coffre sont celles du tableau de bord web : elles existent en Go et en TypeScript, et les deux suites de tests vérifient les mêmes cas.",
@@ -628,14 +631,11 @@ const mcp: DocPage = {
           title: "Comment le brancher à un agent ?",
           blocks: [
             {
-              p: "`kf mcp` sert ses outils sur l'entrée et la sortie standard. Il passe par l'agent local : lancez d'abord `kf unlock`. Pour l'enregistrer dans Claude Code, depuis le dépôt, après `make build` :",
+              p: "`kf mcp` sert `search` et `execute` sur l'entrée et la sortie standard. Il passe par l'agent local : lancez d'abord `kf unlock`. Pour l'enregistrer dans Claude Code, depuis le dépôt, après `make build` :",
             },
             { code: 'claude mcp add keyfold -- "$PWD/bin/kf" mcp' },
             {
-              p: "Code mode : `kf mcp -code-mode` sert deux outils au lieu de quatre. `search` décrit les fonctions d'un objet `kf` (les mêmes opérations que les outils), et `execute` exécute du JavaScript qui les appelle : un seul appel enchaîne plusieurs opérations et ne renvoie que ce dont l'agent a besoin. L'interpréteur ne voit que `kf` et `console.log` : ni fichier, ni réseau, ni processus, 30 secondes et 64 Kio au plus.",
-            },
-            {
-              p: "Mode dépôt : `kf mcp -deposit` utilise une clé de dépôt créée sur la page IA de l'interface web au lieu du coffre déverrouillé. `generate_item` et `import_env` chiffrent les nouveaux éléments pour la clé publique du coffre et les déposent ; `list_items` lit un catalogue des noms que l'interface web écrit pour la clé. Pas de déverrouillage, et la clé ne peut lire aucune valeur. Les dépôts restent hors du coffre jusqu'à ce que vous l'ouvriez dans l'interface web : un nouveau nom est ajouté, un nom qui porte une autre valeur attend votre choix (remplacer, garder les deux, refuser).",
+              p: "Mode dépôt : `kf mcp -deposit` sert les deux mêmes outils avec une clé de dépôt créée sur la page IA de l'interface web au lieu du coffre déverrouillé. `kf.generateItem` et `kf.importEnv` chiffrent les nouveaux éléments pour la clé publique du coffre et les déposent ; `kf.listItems` lit un catalogue des noms que l'interface web écrit pour la clé ; `kf.vaultHealth` n'existe pas. Pas de déverrouillage, et la clé ne peut lire aucune valeur. Les dépôts restent hors du coffre jusqu'à ce que vous l'ouvriez dans l'interface web : un nouveau nom est ajouté, un nom qui porte une autre valeur attend votre choix (remplacer, garder les deux, refuser).",
             },
           ],
         },

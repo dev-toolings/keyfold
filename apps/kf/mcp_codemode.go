@@ -12,11 +12,11 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// Code mode serves two tools instead of four: search describes the
-// operations, execute runs JavaScript that calls them. One script can chain
-// several operations and return only what the agent needs. The interpreter
-// sees the kf object and console.log only: no file, network or process
-// access, and no operation that returns a value, so neither can a script.
+// The MCP serves two tools: search describes the operations, execute runs
+// JavaScript that calls them. One script can chain several operations and
+// return only what the agent needs. The interpreter sees the kf object and
+// console.log only: no file, network or process access. No operation returns
+// a vault value, so a script can only return what its own code holds.
 
 // executeTimeout bounds one script, the operations it calls included.
 var executeTimeout = 30 * time.Second

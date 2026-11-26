@@ -13,8 +13,10 @@ This changelog follows Keep a Changelog and uses Semantic Versioning.
   environment injection, and config templating.
 - Imports from Keyfold, Bitwarden JSON, 1Password 1pux, and CSV. Exports to Keyfold and
   Bitwarden JSON with optional passphrase encryption.
-- `kf mcp` over standard input and output for listing items, generating secrets,
-  and reporting vault health without returning secret values or notes.
+- `kf mcp` over standard input and output with two tools, `search` and `execute`:
+  the agent's JavaScript lists items, generates secrets, imports declared env files
+  and reports vault health without returning secret values or notes. Deposit mode
+  serves the same two tools.
 - Static product site in French and English.
 - Loopback-only `GET /api/v1/alive` probe without a session or rate limit.
 - Build version reporting through `keyfold-server -version`, `kf version`, MCP

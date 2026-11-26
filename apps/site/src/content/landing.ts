@@ -141,7 +141,7 @@ export const CONTENT: Record<Lang, Content> = {
       {
         question: "Un agent IA peut-il l'utiliser sans risque ?",
         answer:
-          "Oui, dans des limites fixées par conception. kf mcp est un serveur MCP à quatre outils (list_items, generate_item, import_env, vault_health) : aucun ne renvoie une valeur ou une note, aucun ne modifie ni ne supprime un élément. Pour donner un secret à un programme, kf run -env VAR=kf://nom/champ -- commande le place dans l'environnement de la commande, jamais dans ses arguments ni sur disque.",
+          "Oui, dans des limites fixées par conception. kf mcp est un serveur MCP à deux outils, search et execute : le JavaScript de l'agent appelle des fonctions dont aucune ne renvoie une valeur ou une note, ni ne modifie ou supprime un élément. Pour donner un secret à un programme, kf run -env VAR=kf://nom/champ -- commande le place dans l'environnement de la commande, jamais dans ses arguments ni sur disque.",
       },
       {
         question: "Comment importer depuis Bitwarden ou 1Password ?",
@@ -258,7 +258,7 @@ export const CONTENT: Record<Lang, Content> = {
       {
         question: "Can AI agents use it safely?",
         answer:
-          "Yes, within limits set by design. kf mcp is an MCP server with four tools (list_items, generate_item, import_env, vault_health): none returns a value or a note, and none edits or deletes an item. To hand a secret to a program, kf run -env VAR=kf://name/field -- command puts it in that command's environment, never in its arguments or on disk.",
+          "Yes, within limits set by design. kf mcp is an MCP server with two tools, search and execute: the agent's JavaScript calls functions that never return a value or a note, and never edit or delete an item. To hand a secret to a program, kf run -env VAR=kf://name/field -- command puts it in that command's environment, never in its arguments or on disk.",
       },
       {
         question: "How do I import from Bitwarden or 1Password?",

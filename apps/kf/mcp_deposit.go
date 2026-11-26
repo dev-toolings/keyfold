@@ -114,7 +114,7 @@ const (
 		"Empty keys deposits every variable of the file. Once the owner opens the vault in the web UI, new names are added, values equal to the stored ones are dropped and the others wait for the owner's choice. Works without unlocking the vault."
 )
 
-// depositOps runs the tools with a deposit key: no unlock, no value read.
+// depositOps runs the operations with a deposit key: no unlock, no value read.
 func depositOps(base string, k depositKey) ops {
 	return ops{
 		list: func(ctx context.Context) (listOutput, error) {

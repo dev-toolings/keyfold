@@ -91,21 +91,20 @@ func TestDepositGenerateNeedsNoUnlock(t *testing.T) {
 		t.Fatal("the tool returned the generated value")
 	}
 	if o.health != nil {
-		t.Error("deposit mode offers vault_health, which needs to read values")
+		t.Error("deposit mode offers vaultHealth, which needs to read values")
 	}
 	for _, f := range o.api() {
 		if f.Name == "kf.vaultHealth" {
-			t.Error("code mode in deposit mode describes kf.vaultHealth")
+			t.Error("search in deposit mode describes kf.vaultHealth")
 		}
 	}
 }
 
 func TestDepositCatalog(t *testing.T) {
 	url, st, _, k, keyID := depositVault(t)
-	o := depositOps(url, k)
-	ctx := context.Background()
-	if _, err := o.list(ctx); err == nil || !strings.Contains(err.Error(), "no catalog yet") {
-		t.Fatalf("list before any catalog: %v", err)
+	session := mcpSession(t, depositOps(url, k))
+	if got, isErr := callOp(t, session, "listItems", nil); !isErr || !strings.Contains(got, "no catalog yet") {
+		t.Fatalf("list before any catalog: %s", got)
 	}
 	// What the owner's web UI writes: names for the deposit key's recipient.
 	cat, _ := json.Marshal(map[string]any{"items": []listedItem{{Name: "fake-taken", Kind: "login", CreatedAt: "2026-11-26T00:00:00Z", UpdatedAt: "2026-11-26T00:00:00Z"}}})
@@ -116,12 +115,16 @@ func TestDepositCatalog(t *testing.T) {
 	if err := st.PutCatalog(keyID, ct); err != nil {
 		t.Fatal(err)
 	}
-	out, err := o.list(ctx)
-	if err != nil || len(out.Items) != 1 || out.Items[0].Name != "fake-taken" || out.CatalogUpdatedAt == "" {
-		t.Fatalf("list: %+v, %v", out, err)
+	got, isErr := callOp(t, session, "listItems", nil)
+	var res struct {
+		StructuredContent struct{ Result listOutput } `json:"structuredContent"`
 	}
-	if _, err := o.generate(ctx, generateInput{Name: "fake-taken"}); err == nil || !strings.Contains(err.Error(), "already exists") {
-		t.Fatalf("generate on a name of the catalog: %v", err)
+	json.Unmarshal([]byte(got), &res)
+	if out := res.StructuredContent.Result; isErr || len(out.Items) != 1 || out.Items[0].Name != "fake-taken" || out.CatalogUpdatedAt == "" {
+		t.Fatalf("list: %s", got)
+	}
+	if got, isErr := callOp(t, session, "generateItem", map[string]any{"name": "fake-taken"}); !isErr || !strings.Contains(got, "already exists") {
+		t.Fatalf("generate on a name of the catalog: %s", got)
 	}
 }
 
@@ -139,15 +142,18 @@ func TestDepositImportTwiceMakesNoCopy(t *testing.T) {
 	os.MkdirAll(filepath.Join(config, "keyfold"), 0o700)
 	os.WriteFile(filepath.Join(config, "keyfold", "sources.json"), []byte(`{"fake-src": {"host": "fake-host", "path": "/opt/.env", "environment": "prod"}}`), 0o600)
 
-	o := depositOps(url, k)
+	session := mcpSession(t, depositOps(url, k))
 	statuses := func() string {
 		t.Helper()
-		out, err := o.importEnv(context.Background(), importInput{Source: "fake-src"})
-		if err != nil {
-			t.Fatal(err)
+		got, isErr := callOp(t, session, "importEnv", map[string]any{"source": "fake-src"})
+		var res struct {
+			StructuredContent struct{ Result importOutput } `json:"structuredContent"`
+		}
+		if json.Unmarshal([]byte(got), &res); isErr {
+			t.Fatal(got)
 		}
 		var s []string
-		for _, r := range out.Keys {
+		for _, r := range res.StructuredContent.Result.Keys {
 			s = append(s, r.Key+"="+r.Status)
 		}
 		return strings.Join(s, ",")
@@ -179,4 +185,38 @@ func mustJSON(t *testing.T, v any) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// Both identities serve the same two tools; only the functions a script sees
+// differ: a deposit key gets no kf.vaultHealth and still never a value.
+func TestMCPSameToolsForBothIdentities(t *testing.T) {
+	url, st, id, k, _ := depositVault(t)
+	for name, o := range map[string]ops{"unlocked": unlockedOps(url), "deposit": depositOps(url, k)} {
+		tools, err := mcpSession(t, o).ListTools(context.Background(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var names []string
+		for _, tool := range tools.Tools {
+			names = append(names, tool.Name)
+		}
+		if got := strings.Join(names, " "); got != "execute search" {
+			t.Errorf("%s tools = %q, want execute and search only", name, got)
+		}
+	}
+
+	session := mcpSession(t, depositOps(url, k))
+	if found, isErr := callTool(t, session, "search", map[string]any{}); isErr || strings.Contains(found, "kf.vaultHealth") || !strings.Contains(found, "kf.generateItem") {
+		t.Errorf("deposit search = %s", found)
+	}
+	got, isErr := callTool(t, session, "execute", map[string]any{"code": `return {health: typeof kf.vaultHealth, gen: kf.generateItem({name: "fake-deposited", kind: "token"})}`})
+	for _, want := range []string{`"health":"undefined"`, `"created":"fake-deposited"`, `"pending":true`} {
+		if isErr || !strings.Contains(got, want) {
+			t.Errorf("deposit execute lacks %s: %s", want, got)
+		}
+	}
+	items := deposited(t, st, id)
+	if len(items) != 1 || len(items[0].Value) < 16 || strings.Contains(got, items[0].Value) {
+		t.Errorf("deposited %d items, or the result holds the value", len(items))
+	}
 }

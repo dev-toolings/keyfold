@@ -45,8 +45,8 @@ The screenshots use a demo vault filled with fake items.
   `kf inject` for config templates, `kf generate`, `kf totp`.
 - **Web UI:** full item sheets (identifier, addresses, live TOTP code, custom
   fields, attachments, history), a generator, a health dashboard.
-- **AI agents:** `kf mcp` lists items, generates secrets and reports vault
-  health, never returning a value. With a deposit key, `kf mcp -deposit` works
+- **AI agents:** `kf mcp` lets an agent list items, generate secrets and report
+  vault health from a script, never returning a value. With a deposit key, `kf mcp -deposit` works
   without unlocking the vault and cannot read a value at all.
 - **Import:** Bitwarden JSON, 1Password 1pux, CSV. **Export:** Keyfold JSON, Bitwarden JSON.
 - **Second factor:** TOTP is required for encrypted identity downloads from other devices.
@@ -188,7 +188,7 @@ not know) is skipped: a warning on stderr gives its id, and every other item
 can still be read, changed and deleted. `list` and `migrate` then exit with
 code 3, since they worked on a part of the vault only. Its name is unknown, so
 what needs the whole vault is refused until the item can be read again or is
-gone: creating an item (`set` on a new name, `import`, the MCP `generate_item`)
+gone: creating an item (`set` on a new name, `import`, the MCP `kf.generateItem`)
 and `export`. The web UI lists the readable items, gives the ids on its system
 health page and is read-only meanwhile.
 
@@ -308,14 +308,29 @@ password.
 
 ## MCP server for AI agents
 
-`kf mcp` serves four tools on stdin/stdout. It uses the local agent, so run
-`kf unlock` first.
+`kf mcp` serves two tools on stdin/stdout, with or without `-deposit`:
+`search` describes the functions of a `kf` object, and `execute` runs
+JavaScript that calls them and returns what the script returns, so one call can
+chain several operations and keep only what the agent needs:
 
-- `list_items`: name, kind, optional project and environment, and creation and
+```js
+const r = kf.importEnv({source: "core-pve"});
+return r.keys.filter(k => k.status !== "unchanged");
+```
+
+The interpreter ([goja](https://github.com/dop251/goja), in process) sees `kf`
+and `console.log` only: no file, network or process access. A script stops
+after 30 seconds, and its result and logs are capped at 64 KiB. An operation
+that fails throws an Error the script can catch.
+
+Without `-deposit`, `kf mcp` uses the local agent, so run `kf unlock` first.
+The functions are:
+
+- `kf.listItems()`: name, kind, optional project and environment, and creation and
   last modification dates.
-- `generate_item`: creates an item holding a random secret generated and
+- `kf.generateItem({name, kind})`: creates an item holding a random secret generated and
   encrypted locally. It refuses a name that already exists.
-- `import_env`: copies variables of a remote env file into token items named
+- `kf.importEnv({source, keys})`: copies variables of a remote env file into token items named
   `<source>.<KEY>`. `source` is an alias you declare in
   `~/.config/keyfold/sources.json` (mode 600), so the model cannot point kf at
   another host or file. Set optional `project` and `environment` fields on the
@@ -332,39 +347,24 @@ password.
   is left alone) or `missing`. Empty `keys` imports the whole file. The file is
   read as dotenv: quoted values may span lines, and an unterminated quote ends
   the parse. A failed ssh names a known reason only, never the remote stderr.
-- `vault_health`: the server facts of `/personal/health` and the dashboard
+- `kf.vaultHealth()`: the server facts of `/personal/health` and the dashboard
   indicators (stale, reused, short, weak, website without TOTP) as item names.
   `unreadable` lists the ids of the items that could not be decrypted, as
-  `list_items` does.
+  `kf.listItems` does.
   The rules are in `internal/vault/health.go`, the same as the web
   (`packages/vault-core/src/stats.ts`): `internal/vault/testdata/health.json`
   holds cases both test suites check.
 
-No tool returns a value or a note, and none edits or deletes: whatever a tool
-returns enters the model's conversation and its transcripts. A value given to
-a tool would enter them too, which is why `import_env` takes names only.
+No function returns a value or a note, and none edits or deletes: whatever a
+script returns enters the model's conversation and its transcripts. A value
+written in a script would enter them too, which is why `kf.importEnv` takes
+names only.
 
 Register it in Claude Code, from this directory, after `make build`:
 
 ```sh
 claude mcp add keyfold -- "$PWD/bin/kf" mcp
 ```
-
-Code mode: `kf mcp -code-mode` serves two tools instead of four. `search`
-describes the functions of a `kf` object (`listItems`, `vaultHealth`,
-`generateItem`, `importEnv`, the same operations as the tools); `execute` runs
-JavaScript that calls them and returns what the script returns, so one call can
-chain several operations and keep only what the agent needs:
-
-```js
-const r = kf.importEnv({source: "core-pve"});
-return r.keys.filter(k => k.status !== "unchanged");
-```
-
-The interpreter ([goja](https://github.com/dop251/goja), in process) sees `kf`
-and `console.log` only: no file, network or process access. A script stops
-after 30 seconds, and its result and logs are capped at 64 KiB. No function
-returns a value, so no script can either.
 
 ### Deposit mode: no unlock, no read
 
@@ -374,7 +374,9 @@ pair, the server keeps the token's SHA-256 and the public key, and the page
 shows once the `KEYFOLD_DEPOSIT_KEY` value with the `claude mcp add` command.
 The value also pins the vault's public key, so a server cannot swap in its own.
 
-- `generate_item` and `import_env` encrypt the new items locally for the vault's
+`search` and `execute` are the same; the functions change:
+
+- `kf.generateItem` and `kf.importEnv` encrypt the new items locally for the vault's
   public key and deposit them (`POST /api/v1/inbox`). The deposit key cannot
   decrypt them, nor any item. A deposit waits outside the vault: `kf get`,
   `kf run`, `kf inject` and every listing ignore it. A retry, or a second
@@ -384,10 +386,10 @@ The value also pins the vault's public key, so a server cannot swap in its own.
   one whose name holds another value waits on the AI page: replace the value
   (the old one stays in the history), keep both, or refuse. The page names the
   key that made each deposit, as the server recorded it.
-- `list_items` reads a catalog the web UI encrypts for the deposit key when the
+- `kf.listItems` reads a catalog the web UI encrypts for the deposit key when the
   key is created, when the vault opens and after each change made there: names,
   kinds, projects and environments, never a value, a note or a date.
-  `catalog_updated_at` says when. `vault_health` is not offered.
+  `catalog_updated_at` says when. `kf.vaultHealth` does not exist.
 - A deposit is 64 KiB at most, and a key holds 500 waiting deposits at most.
   Revoking a key on the AI page deletes its waiting deposits and catalog.
 

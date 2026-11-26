@@ -35,9 +35,9 @@ export function AiPage() {
             <h2>Accès complet (coffre déverrouillé)</h2>
           </CardTitle>
           <CardDescription>
-            Ce mode ajoute l'outil <code>vault_health</code> et vérifie les doublons de valeur à l'import, mais il lit
-            le coffre : déverrouillez-le avec <code>{`kf -server ${window.location.origin} unlock`}</code> avant chaque
-            session.
+            Ce mode ajoute la fonction <code>kf.vaultHealth</code> et vérifie les doublons de valeur à l'import, mais il
+            lit le coffre : déverrouillez-le avec <code>{`kf -server ${window.location.origin} unlock`}</code> avant
+            chaque session.
           </CardDescription>
         </CardHeader>
         <CardContent>

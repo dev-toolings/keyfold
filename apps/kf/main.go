@@ -66,14 +66,13 @@ commands:
   rm <name>                  delete an item
   migrate [-apply]           rewrite items in the current format (dry run
                              without -apply)
-  mcp [-code-mode] [-deposit]
-                             serve the MCP tools on stdin/stdout, for AI agents
-                             (list names, generate a secret, import a declared
-                             env file; never a value). -code-mode serves only
-                             search and execute (JavaScript calling the same
-                             operations). -deposit works without unlock, with
-                             the deposit key in $KEYFOLD_DEPOSIT_KEY: new items
-                             wait for review in the web UI
+  mcp [-deposit]             serve search and execute on stdin/stdout, for AI
+                             agents: JavaScript calling the operations (list
+                             names, generate a secret, import a declared env
+                             file; never a value). -deposit works without
+                             unlock, with the deposit key in
+                             $KEYFOLD_DEPOSIT_KEY: new items wait for review in
+                             the web UI
 
 The server URL defaults to $KEYFOLD_SERVER, then http://127.0.0.1:8717.
 For remote init, set $KEYFOLD_INSTALL_TOKEN to the install token from the server log.

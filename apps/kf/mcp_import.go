@@ -16,7 +16,7 @@ import (
 	"keyfold/internal/vault"
 )
 
-// import_env copies variables of a remote env file into the vault. The agent
+// importEnv copies variables of a remote env file into the vault. The agent
 // names a source and keys; kf reads the file over ssh and encrypts the values
 // itself, so no value passes through the model. A source is an alias the user
 // declared in sources.json: the model cannot point kf at a host or a file.
@@ -49,7 +49,7 @@ type importOutput struct {
 	Keys   []importedKey `json:"keys"`
 }
 
-// sourcesPath is where the user declares the sources import_env may read.
+// sourcesPath is where the user declares the sources kf.importEnv may read.
 func sourcesPath() (string, error) {
 	dir, err := os.UserConfigDir()
 	if err != nil {

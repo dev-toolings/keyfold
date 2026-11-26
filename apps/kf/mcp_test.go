@@ -22,6 +22,46 @@ import (
 	"keyfold/internal/vault"
 )
 
+// mcpSession connects a client to the MCP server of o.
+func mcpSession(t *testing.T, o ops) *mcp.ClientSession {
+	t.Helper()
+	serverSide, clientSide := mcp.NewInMemoryTransports()
+	if _, err := newMCPServer(o).Connect(context.Background(), serverSide, nil); err != nil {
+		t.Fatal(err)
+	}
+	session, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0"}, nil).Connect(context.Background(), clientSide, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { session.Close() })
+	return session
+}
+
+// callTool returns the whole tool result as JSON (text and structured
+// content) and whether it is an error.
+func callTool(t *testing.T, session *mcp.ClientSession, name string, arguments any) (string, bool) {
+	t.Helper()
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: arguments})
+	if err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	raw, err := json.Marshal(res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw), res.IsError
+}
+
+// callOp runs the operation kf.<fn>(arg) through execute.
+func callOp(t *testing.T, session *mcp.ClientSession, fn string, arg any) (string, bool) {
+	t.Helper()
+	raw, err := json.Marshal(arg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return callTool(t, session, "execute", map[string]any{"code": "return kf." + fn + "(" + string(raw) + ")"})
+}
+
 func TestMCPToolsNeverReturnValues(t *testing.T) {
 	dir := t.TempDir()
 	st, err := store.Open(filepath.Join(dir, "data"))
@@ -54,46 +94,22 @@ func TestMCPToolsNeverReturnValues(t *testing.T) {
 		t.Fatalf("set: exit %d: %s", code, stderr.String())
 	}
 
-	ctx := context.Background()
-	serverSide, clientSide := mcp.NewInMemoryTransports()
-	if _, err := newMCPServer(unlockedOps(ts.URL), false).Connect(ctx, serverSide, nil); err != nil {
-		t.Fatal(err)
-	}
-	session, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0"}, nil).Connect(ctx, clientSide, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer session.Close()
-
-	// call returns the whole tool result as JSON: text content and structured content.
-	call := func(name string, arguments any) (string, bool) {
-		t.Helper()
-		res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: arguments})
-		if err != nil {
-			t.Fatalf("%s: %v", name, err)
-		}
-		raw, err := json.Marshal(res)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return string(raw), res.IsError
-	}
-
-	created, isErr := call("generate_item", map[string]any{"name": "fake-generated", "kind": "token"})
+	session := mcpSession(t, unlockedOps(ts.URL))
+	created, isErr := callOp(t, session, "generateItem", map[string]any{"name": "fake-generated", "kind": "token"})
 	if isErr {
-		t.Fatalf("generate_item failed: %s", created)
+		t.Fatalf("generateItem failed: %s", created)
 	}
-	if again, isErr := call("generate_item", map[string]any{"name": "fake-generated"}); !isErr {
-		t.Errorf("generate_item on an existing name succeeded: %s", again)
+	if again, isErr := callOp(t, session, "generateItem", map[string]any{"name": "fake-generated"}); !isErr {
+		t.Errorf("generateItem on an existing name succeeded: %s", again)
 	}
-	listed, isErr := call("list_items", map[string]any{})
+	listed, isErr := callOp(t, session, "listItems", nil)
 	if isErr || !strings.Contains(listed, "fake-key") || !strings.Contains(listed, "fake-generated") {
-		t.Fatalf("list_items = %s", listed)
+		t.Fatalf("listItems = %s", listed)
 	}
 
-	health, isErr := call("vault_health", map[string]any{})
+	health, isErr := callOp(t, session, "vaultHealth", nil)
 	if isErr || !strings.Contains(health, `"items":2`) || !strings.Contains(health, `"api":"v1"`) || !strings.Contains(health, `"no_totp":[]`) || !strings.Contains(health, `"unreadable":[]`) {
-		t.Fatalf("vault_health = %s", health)
+		t.Fatalf("vaultHealth = %s", health)
 	}
 
 	// The generated value, read back through the CLI, must not be in any tool result.
@@ -114,7 +130,7 @@ func TestMCPToolsNeverReturnValues(t *testing.T) {
 	}
 }
 
-// import_env reads only a declared source, stores each key once, never
+// importEnv reads only a declared source, stores each key once, never
 // overwrites, and returns no value.
 func TestMCPImportEnv(t *testing.T) {
 	url, _, _ := setupVault(t)
@@ -151,30 +167,17 @@ func TestMCPImportEnv(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	serverSide, clientSide := mcp.NewInMemoryTransports()
-	if _, err := newMCPServer(unlockedOps(url), false).Connect(ctx, serverSide, nil); err != nil {
-		t.Fatal(err)
-	}
-	session, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0"}, nil).Connect(ctx, clientSide, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer session.Close()
+	session := mcpSession(t, unlockedOps(url))
 	var results string
 	call := func(arguments map[string]any) (importOutput, bool) {
 		t.Helper()
-		res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "import_env", Arguments: arguments})
-		if err != nil {
-			t.Fatal(err)
+		raw, isErr := callOp(t, session, "importEnv", arguments)
+		results += raw
+		var res struct {
+			StructuredContent struct{ Result importOutput } `json:"structuredContent"`
 		}
-		raw, _ := json.Marshal(res)
-		results += string(raw)
-		var out importOutput
-		if !res.IsError {
-			structured, _ := json.Marshal(res.StructuredContent)
-			json.Unmarshal(structured, &out)
-		}
-		return out, res.IsError
+		json.Unmarshal([]byte(raw), &res)
+		return res.StructuredContent.Result, isErr
 	}
 	statuses := func(out importOutput) string {
 		var s []string
@@ -258,7 +261,7 @@ func TestMCPImportEnv(t *testing.T) {
 	}
 }
 
-// Code mode serves search and execute only; a script chains the operations,
+// A script chains the operations,
 // sees no host API, stops on time, and never gets a value.
 func TestMCPCodeMode(t *testing.T) {
 	url, _, id := setupVault(t)
@@ -267,38 +270,13 @@ func TestMCPCodeMode(t *testing.T) {
 		t.Fatalf("set: exit %d: %s", code, stderr.String())
 	}
 	ctx := context.Background()
-	serverSide, clientSide := mcp.NewInMemoryTransports()
-	if _, err := newMCPServer(unlockedOps(url), true).Connect(ctx, serverSide, nil); err != nil {
-		t.Fatal(err)
-	}
-	session, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0"}, nil).Connect(ctx, clientSide, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer session.Close()
-
-	tools, err := session.ListTools(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var names []string
-	for _, tool := range tools.Tools {
-		names = append(names, tool.Name)
-	}
-	if got := strings.Join(names, " "); got != "execute search" {
-		t.Fatalf("code mode tools = %q, want execute and search only", got)
-	}
-
+	session := mcpSession(t, unlockedOps(url))
 	var results string
 	call := func(name string, arguments map[string]any) (string, bool) {
 		t.Helper()
-		res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: arguments})
-		if err != nil {
-			t.Fatal(err)
-		}
-		raw, _ := json.Marshal(res)
-		results += string(raw)
-		return string(raw), res.IsError
+		raw, isErr := callTool(t, session, name, arguments)
+		results += raw
+		return raw, isErr
 	}
 
 	if found, isErr := call("search", map[string]any{"query": "import"}); isErr || !strings.Contains(found, "kf.importEnv") || strings.Contains(found, "kf.listItems") {

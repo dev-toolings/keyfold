@@ -1,5 +1,5 @@
 // Vault statistics, computed in the browser from decrypted entries. The health
-// rules match internal/vault/health.go (used by the MCP tool vault_health):
+// rules match internal/vault/health.go (used by the MCP function kf.vaultHealth):
 // internal/vault/testdata/health.json holds cases both test suites check.
 // Every function is pure: it takes the entries and, when time matters, a `now` date.
 import { createdAt, type Entry, KINDS, type Kind } from "./item";

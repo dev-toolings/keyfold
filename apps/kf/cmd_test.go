@@ -2,14 +2,11 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"keyfold/internal/vault"
 )
@@ -317,37 +314,23 @@ func TestUnreadableItemDoesNotHideTheOthers(t *testing.T) {
 		t.Errorf("read after set: exit %d, stdout %q", code, stdout)
 	}
 
-	// The MCP tools say what they leave out, and refuse to create.
-	ctx := context.Background()
-	serverSide, clientSide := mcp.NewInMemoryTransports()
-	if _, err := newMCPServer(unlockedOps(url), false).Connect(ctx, serverSide, nil); err != nil {
-		t.Fatal(err)
-	}
-	session, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0"}, nil).Connect(ctx, clientSide, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer session.Close()
-	for tool, c := range map[string]struct {
-		arguments map[string]any
-		isError   bool
-		want      string
+	// The MCP operations say what they leave out, and refuse to create.
+	session := mcpSession(t, unlockedOps(url))
+	for fn, c := range map[string]struct {
+		argument map[string]any
+		isError  bool
+		want     string
 	}{
-		"list_items":    {map[string]any{}, false, `"unreadable":["` + damaged + `"]`},
-		"vault_health":  {map[string]any{}, false, `"unreadable":["` + damaged + `"]`},
-		"generate_item": {map[string]any{"name": "fake-generated"}, true, "cannot be read (" + damaged + ")"},
+		"listItems":    {nil, false, `"unreadable":["` + damaged + `"]`},
+		"vaultHealth":  {nil, false, `"unreadable":["` + damaged + `"]`},
+		"generateItem": {map[string]any{"name": "fake-generated"}, true, "cannot be read (" + damaged + ")"},
 	} {
-		res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: tool, Arguments: c.arguments})
-		if err != nil {
-			t.Fatalf("%s: %v", tool, err)
-		}
-		raw, _ := json.Marshal(res)
-		if res.IsError != c.isError || !strings.Contains(string(raw), c.want) {
-			t.Errorf("%s: error = %v, result %s", tool, res.IsError, raw)
+		if raw, isErr := callOp(t, session, fn, c.argument); isErr != c.isError || !strings.Contains(raw, c.want) {
+			t.Errorf("%s: error = %v, result %s", fn, isErr, raw)
 		}
 	}
 	if after := count(); after != before {
-		t.Errorf("items in the store: %d, want %d: generate_item created one", after, before)
+		t.Errorf("items in the store: %d, want %d: generateItem created one", after, before)
 	}
 
 	// Without the damaged item, no warning and the usual exit code.

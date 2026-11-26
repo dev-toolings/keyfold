@@ -9,7 +9,7 @@ import { errorMessage, FILTER_LABELS, formatNumber, formatRelative, formatSize, 
 import { FILTERS, type Filter, health, type ServerHealth, SHORT_LENGTH, STALE_DAYS, WEAK_BITS } from "@/vault";
 import { useVault } from "@/vault-context";
 
-/** What each indicator checks, as vault_health (MCP) documents it. */
+/** What each indicator checks, as kf.vaultHealth (MCP) documents it. */
 const RULES: Record<Filter, string> = {
   stale: `Non modifiés depuis plus de ${STALE_DAYS} jours`,
   reused: "Même secret qu'un autre élément",

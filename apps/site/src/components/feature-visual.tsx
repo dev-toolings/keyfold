@@ -69,11 +69,11 @@ const CLI_ROWS: Row[] = [
 ];
 
 const MCP_ROWS: Row[] = [
-  ["tool", "accent", " list_items"],
+  ["execute", "accent", " kf.listItems()"],
   ['  { "name": "ssh/prod-web-01",', "dim"],
   ['    "kind": "ssh-passphrase" }', "dim"],
   [" "],
-  ["tool", "accent", " generate_item"],
+  ["execute", "accent", " kf.generateItem({...})"],
   ['  { "created": "api/staging",', "dim"],
   ['    "kind": "token" }', "dim"],
   [" "],
