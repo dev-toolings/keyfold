@@ -36,13 +36,13 @@ export function AiPage() {
           </CardTitle>
           <CardDescription>
             Ce mode ajoute l'outil <code>vault_health</code> et vérifie les doublons de valeur à l'import, mais il lit
-            le coffre : déverrouillez-le avec <code>"/chemin/vers/kf" unlock</code> avant chaque session. Remplacez{" "}
-            <code>/chemin/vers/kf</code> par le chemin absolu du binaire.
+            le coffre : déverrouillez-le avec <code>{`kf -server ${window.location.origin} unlock`}</code> avant chaque
+            session.
           </CardDescription>
         </CardHeader>
         <CardContent>
           <pre className="overflow-x-auto rounded-lg bg-muted p-3 font-mono text-xs">
-            <code>{'claude mcp add --transport stdio keyfold -- "/chemin/vers/kf" mcp'}</code>
+            <code>{`claude mcp add keyfold -s user -e KEYFOLD_SERVER=${window.location.origin} -- kf mcp`}</code>
           </pre>
         </CardContent>
       </Card>
@@ -198,7 +198,7 @@ function DepositKeysCard() {
 
   const command =
     created &&
-    `claude mcp add keyfold -s user -e KEYFOLD_SERVER=${window.location.origin} -e KEYFOLD_DEPOSIT_KEY=${created.value} -- "/chemin/vers/kf" mcp -deposit`;
+    `claude mcp add keyfold -s user -e KEYFOLD_SERVER=${window.location.origin} -e KEYFOLD_DEPOSIT_KEY=${created.value} -- kf mcp -deposit`;
 
   return (
     <Card>
@@ -226,6 +226,10 @@ function DepositKeysCard() {
             <pre className="overflow-x-auto rounded-lg bg-muted p-3 font-mono text-xs">
               <code>{command}</code>
             </pre>
+            <p className="text-sm text-muted-foreground">
+              <code>kf</code> doit être dans le <code>PATH</code>. Si ce serveur utilise un certificat privé, ajoutez{" "}
+              <code>-e SSL_CERT_DIR=</code> suivi du dossier qui contient son certificat racine.
+            </p>
             <div className="flex flex-wrap gap-2">
               <Button
                 size="sm"
