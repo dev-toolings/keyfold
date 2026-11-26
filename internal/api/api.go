@@ -10,9 +10,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"image/png"
 	"io"
 	"log/slog"
+	"math/big"
 	"net/http"
 	"os"
 	"slices"
@@ -53,6 +55,15 @@ const (
 	totpHeader      = "X-TOTP-Code"
 	ageHeader       = "age-encryption.org/v1\n"
 	installHeader   = "X-Install-Token"
+
+	// Email setup: a code sent to the owner's address stands in for the
+	// install token and for a local connection until TOTP is on.
+	setupHeader          = "X-Setup-Token"
+	setupCodeTTL         = 10 * time.Minute
+	setupCodeMaxFailures = 5
+	setupResendWait      = time.Minute
+	setupTokenTTL        = 30 * time.Minute
+	setupMailSubject     = "Keyfold : votre code de configuration"
 
 	// contentSecurityPolicy is sent with every response. The web UI loads its
 	// own files only; the one outside call is the breach check (HIBP_RANGE_URL
@@ -100,6 +111,20 @@ type server struct {
 	localClient clientState             // reserved for requests that pass hosts.Local
 
 	totpLastStep int64 // last accepted time step: a code is used once
+
+	ownerEmail        string // empty: email setup is off
+	mailer            Mailer
+	setupCode         string // pending email code, guarded by mu
+	setupCodeExpires  time.Time
+	setupCodeFailures int
+	setupSentAt       time.Time
+	setupToken        string // granted by a valid email code, guarded by mu
+	setupTokenExpires time.Time
+}
+
+// Mailer sends one plain text email.
+type Mailer interface {
+	Send(to, subject, body string) error
 }
 
 // Options configures the handler New returns.
@@ -111,6 +136,11 @@ type Options struct {
 	Hosts []string
 	// Web serves the built web UI on every path outside /api/. Optional.
 	Web http.Handler
+	// OwnerEmail and Mailer turn on email setup: a code sent to OwnerEmail lets
+	// another device create the vault and turn TOTP on. The install token is
+	// then off. Optional, both or neither.
+	OwnerEmail string
+	Mailer     Mailer
 }
 
 // New returns the handler for the given store: the API under /api/ and, when
@@ -123,6 +153,10 @@ func New(st *store.Store, o Options) http.Handler {
 	}
 	s.hosts = o.Hosts
 	s.web = o.Web
+	s.ownerEmail, s.mailer = o.OwnerEmail, o.Mailer
+	if s.emailSetup() {
+		s.installToken = ""
+	}
 	if s.installToken != "" {
 		slog.Info("Use this install token to create the vault from a non-local device", "installToken", s.installToken)
 	}
@@ -146,6 +180,8 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("GET "+alivePath, alive)
 	mux.HandleFunc("GET /api/v1/status", s.limitCalls(s.status))
 	mux.HandleFunc("POST /api/v1/init", s.limitCalls(s.initVault))
+	mux.HandleFunc("POST /api/v1/setup/email", s.limitCalls(s.setupEmail))
+	mux.HandleFunc("POST /api/v1/setup/verify", s.limitCalls(s.setupVerify))
 	mux.HandleFunc("GET /api/v1/identity", s.limitCalls(s.identity))
 	mux.HandleFunc("POST /api/v1/challenge", s.limitCalls(s.challenge))
 	mux.HandleFunc("POST /api/v1/session", s.limitCalls(s.session))
@@ -321,7 +357,116 @@ func (s *server) status(w http.ResponseWriter, r *http.Request) {
 		internalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"initialized": s.store.Initialized(), "totp": t.Enabled})
+	writeJSON(w, http.StatusOK, map[string]bool{
+		"initialized": s.store.Initialized(), "totp": t.Enabled, "emailSetup": s.emailSetup(),
+	})
+}
+
+func (s *server) emailSetup() bool {
+	return s.ownerEmail != "" && s.mailer != nil
+}
+
+// setupOpen answers false, after writing the error, unless email setup is on
+// and the vault is missing or has TOTP off.
+func (s *server) setupOpen(w http.ResponseWriter) bool {
+	if !s.emailSetup() {
+		fail(w, http.StatusNotFound, "email setup is off")
+		return false
+	}
+	t, err := s.store.TOTP()
+	if err != nil {
+		internalError(w, err)
+		return false
+	}
+	if s.store.Initialized() && t.Enabled {
+		fail(w, http.StatusConflict, "setup is complete")
+		return false
+	}
+	return true
+}
+
+// setupEmail sends a 6 digit code when the address is the owner's, at most once
+// a minute. Every request gets the same immediate empty answer: the email goes
+// out in the background and a failure is only logged, so neither the status
+// nor the delay tells the owner's address from another.
+func (s *server) setupEmail(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email string `json:"email"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	n, _ := rand.Int(rand.Reader, big.NewInt(1_000_000))
+	code := fmt.Sprintf("%06d", n)
+	owner := strings.EqualFold(strings.TrimSpace(req.Email), s.ownerEmail)
+	// The state check and the new code share mu with totpEnable, so no code is
+	// stored once TOTP is on.
+	s.mu.Lock()
+	if !s.setupOpen(w) {
+		s.mu.Unlock()
+		return
+	}
+	now := s.now()
+	send := owner && !now.Before(s.setupSentAt.Add(setupResendWait)) // else the last code stays valid
+	if send {
+		s.setupSentAt = now
+		s.setupCode, s.setupCodeExpires, s.setupCodeFailures = code, now.Add(setupCodeTTL), 0
+	}
+	s.mu.Unlock()
+	w.WriteHeader(http.StatusNoContent)
+	if !send {
+		return
+	}
+	body := "Votre code de configuration Keyfold : " + code + "\r\n\r\n" +
+		"Il expire dans 10 minutes. Si vous n'avez rien demandé, ignorez ce message.\r\n"
+	requestID := w.Header().Get("X-Request-Id")
+	go func() {
+		if err := s.mailer.Send(s.ownerEmail, setupMailSubject, body); err != nil {
+			slog.Error("setup email not sent", "err", err, "requestId", requestID)
+		}
+	}()
+}
+
+// setupVerify trades a valid email code for a setup token. A code is used once
+// and dropped after 5 wrong tries. The state check runs under mu, which
+// totpEnable takes after saving TOTP: no token is granted once TOTP is on.
+func (s *server) setupVerify(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Code string `json:"code"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.setupOpen(w) {
+		return
+	}
+	now := s.now()
+	if s.setupCode == "" || !now.Before(s.setupCodeExpires) {
+		s.setupCode = ""
+		fail(w, http.StatusForbidden, "no valid code, ask for a new one")
+		return
+	}
+	if subtle.ConstantTimeCompare([]byte(strings.TrimSpace(req.Code)), []byte(s.setupCode)) != 1 {
+		if s.setupCodeFailures++; s.setupCodeFailures >= setupCodeMaxFailures {
+			s.setupCode = ""
+		}
+		fail(w, http.StatusForbidden, "wrong code")
+		return
+	}
+	s.setupCode = ""
+	s.setupToken, s.setupTokenExpires = randomHex(32), now.Add(setupTokenTTL)
+	writeJSON(w, http.StatusOK, map[string]string{"token": s.setupToken})
+}
+
+// validSetupToken reports whether r carries the live token setupVerify granted.
+func (s *server) validSetupToken(r *http.Request) bool {
+	token := r.Header.Get(setupHeader)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return token != "" && s.setupToken != "" && s.now().Before(s.setupTokenExpires) &&
+		subtle.ConstantTimeCompare([]byte(token), []byte(s.setupToken)) == 1
 }
 
 func (s *server) initVault(w http.ResponseWriter, r *http.Request) {
@@ -331,8 +476,13 @@ func (s *server) initVault(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusConflict, "already initialized")
 		return
 	}
-	if !hosts.Local(r) && (s.installToken == "" || subtle.ConstantTimeCompare([]byte(r.Header.Get(installHeader)), []byte(s.installToken)) != 1) {
-		fail(w, http.StatusForbidden, installHeader+" is required and must match the install token in the server log")
+	if !hosts.Local(r) && !s.validSetupToken(r) &&
+		(s.installToken == "" || subtle.ConstantTimeCompare([]byte(r.Header.Get(installHeader)), []byte(s.installToken)) != 1) {
+		if s.emailSetup() {
+			fail(w, http.StatusForbidden, "verify the owner email to create the vault from another device")
+		} else {
+			fail(w, http.StatusForbidden, installHeader+" is required and must match the install token in the server log")
+		}
 		return
 	}
 	var req struct {
@@ -363,7 +513,8 @@ func (s *server) initVault(w http.ResponseWriter, r *http.Request) {
 }
 
 // identity hands out the encrypted identity. With TOTP off, only local
-// requests can fetch it. With TOTP on, a valid code or live session is required.
+// requests and holders of an email setup token can fetch it. With TOTP on, a
+// valid code or live session is required.
 func (s *server) identity(w http.ResponseWriter, r *http.Request) {
 	if !s.store.Initialized() {
 		fail(w, http.StatusNotFound, "not initialized")
@@ -374,7 +525,7 @@ func (s *server) identity(w http.ResponseWriter, r *http.Request) {
 		internalError(w, err)
 		return
 	}
-	if !t.Enabled && !hosts.Local(r) {
+	if !t.Enabled && !hosts.Local(r) && !s.validSetupToken(r) {
 		fail(w, http.StatusForbidden, "Enable the second factor on the server machine first")
 		return
 	}
@@ -630,6 +781,9 @@ func (s *server) totpEnable(w http.ResponseWriter, r *http.Request) {
 		internalError(w, err)
 		return
 	}
+	s.mu.Lock()
+	s.setupCode, s.setupToken = "", "" // setup is complete: TOTP now guards remote access
+	s.mu.Unlock()
 	w.WriteHeader(http.StatusNoContent)
 }
 

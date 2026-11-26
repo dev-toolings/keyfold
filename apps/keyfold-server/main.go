@@ -2,6 +2,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"flag"
@@ -9,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/mail"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -18,6 +20,7 @@ import (
 
 	"keyfold/internal/api"
 	"keyfold/internal/logger"
+	"keyfold/internal/smtpmail"
 	"keyfold/internal/store"
 	"keyfold/internal/version"
 )
@@ -78,6 +81,10 @@ func main() {
 		os.Exit(1)
 	}
 	opts := api.Options{MaxBlob: *maxBlob, Hosts: hostList(*allowedHosts)}
+	if err := emailSetup(&opts); err != nil {
+		slog.Error("email setup", "err", err)
+		os.Exit(1)
+	}
 	if *web != "" {
 		if info, err := os.Stat(*web); err == nil && info.IsDir() {
 			opts.Web = spa(*web)
@@ -121,6 +128,33 @@ func serve(ctx context.Context, h http.Handler, ln net.Listener) error {
 	if err := <-failed; !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
+	return nil
+}
+
+// emailSetup reads KEYFOLD_OWNER_EMAIL and the KEYFOLD_SMTP_* variables. With
+// no owner email, setup keeps the install token.
+func emailSetup(o *api.Options) error {
+	owner := os.Getenv("KEYFOLD_OWNER_EMAIL")
+	if owner == "" {
+		return nil
+	}
+	addr, err := mail.ParseAddress(owner)
+	if err != nil {
+		return fmt.Errorf("KEYFOLD_OWNER_EMAIL: %w", err)
+	}
+	m := smtpmail.SMTP{
+		Addr:     os.Getenv("KEYFOLD_SMTP_ADDR"),
+		Username: os.Getenv("KEYFOLD_SMTP_USER"),
+		Password: os.Getenv("KEYFOLD_SMTP_PASSWORD"),
+	}
+	m.From = cmp.Or(os.Getenv("KEYFOLD_SMTP_FROM"), m.Username)
+	if _, _, err := net.SplitHostPort(m.Addr); err != nil {
+		return fmt.Errorf("KEYFOLD_SMTP_ADDR must be host:port, such as smtp.gmail.com:587: %w", err)
+	}
+	if m.From == "" {
+		return errors.New("set KEYFOLD_SMTP_FROM or KEYFOLD_SMTP_USER")
+	}
+	o.OwnerEmail, o.Mailer = addr.Address, m
 	return nil
 }
 
